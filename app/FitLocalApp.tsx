@@ -2,7 +2,7 @@
 
 /* eslint-disable react-hooks/set-state-in-effect */
 
-import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, FormEvent, MouseEvent, useEffect, useMemo, useRef, useState } from "react";
 import { exercises, EXERCISE_DATABASE_VERSION } from "./workout-data";
 import { exerciseMedia } from "./exercise-media.generated";
 import { exerciseMediaQueries } from "./exercise-media-queries";
@@ -643,8 +643,15 @@ export default function FitLocalApp() {
 
   const showBottomNav = !editingProfile && !previewWorkout;
 
+  const redirectIosProfileInstall = (event: MouseEvent<HTMLElement>) => {
+    const installLink = (event.target as HTMLElement).closest<HTMLAnchorElement>('a[href="/AngelsFit.mobileconfig"]');
+    if (!installLink) return;
+    event.preventDefault();
+    window.location.assign("/instalar-angels-fit");
+  };
+
   return (
-    <main className="app-shell"><div className="mobile-app">
+    <main className="app-shell" onClickCapture={redirectIosProfileInstall}><div className="mobile-app">
       {savedMessage && <div className="toast">✓ {savedMessage}</div>}
       <div className={`app-content ${showBottomNav ? "" : "without-nav"}`}>{previewWorkout ? <WorkoutPreview workout={previewWorkout} onBack={() => setPreviewWorkout(null)} onStart={() => { setPreviewWorkout(null); startWorkout(previewWorkout); }} /> : tabContent}</div>
       {tab === "profile" && !editingProfile && <WorkoutFontSizeSetting value={preferences.workoutFontSize} onChange={(value) => changePreference("workoutFontSize", value)} />}

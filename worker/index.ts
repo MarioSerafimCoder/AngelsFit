@@ -29,11 +29,15 @@ const worker = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
-    if (url.pathname === "/AngelsFit.mobileconfig") {
-      const asset = await env.ASSETS.fetch(request);
+    // Static assets bypass the worker on Sites, so expose the profile through
+    // a route that always reaches this response and can set Apple's MIME type.
+    if (url.pathname === "/instalar-angels-fit") {
+      const profileUrl = new URL("/AngelsFit.mobileconfig", request.url);
+      const asset = await env.ASSETS.fetch(new Request(profileUrl));
       const headers = new Headers(asset.headers);
       headers.set("Content-Type", "application/x-apple-aspen-config");
       headers.set("Content-Disposition", 'attachment; filename="AngelsFit.mobileconfig"');
+      headers.set("Cache-Control", "no-store");
       return new Response(asset.body, { status: asset.status, statusText: asset.statusText, headers });
     }
 
