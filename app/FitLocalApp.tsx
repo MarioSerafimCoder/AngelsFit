@@ -532,6 +532,8 @@ export default function FitLocalApp() {
       if (!response.ok) throw new Error("Version metadata unavailable");
       const metadata: unknown = await response.json();
       if (!validateVersionMetadata(metadata)) throw new Error("Invalid version metadata");
+      const registration = await navigator.serviceWorker?.getRegistration();
+      await registration?.update();
       const checkedAt = new Date().toISOString();
       window.localStorage.setItem(LAST_UPDATE_CHECK_KEY, checkedAt);
       setLastUpdateCheck(checkedAt);
@@ -541,9 +543,14 @@ export default function FitLocalApp() {
       }
       if (compareVersions(metadata.contentVersion, CONTENT_VERSION) > 0) {
         setUpdateStatus("available");
-        const registration = await navigator.serviceWorker?.getRegistration();
-        await registration?.update();
-        window.location.reload();
+        registration?.waiting?.postMessage({ type: "SKIP_WAITING" });
+        if ("caches" in globalThis) {
+          const cacheKeys = await globalThis.caches.keys();
+          await Promise.all(cacheKeys.filter((key) => key.startsWith("angels-fit-shell-")).map((key) => globalThis.caches.delete(key)));
+        }
+        const reloadUrl = new URL(window.location.href);
+        reloadUrl.searchParams.set("updated", metadata.contentVersion);
+        window.location.replace(reloadUrl.toString());
         return;
       }
       setUpdateStatus("current");

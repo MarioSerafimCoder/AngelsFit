@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
+  CONTENT_VERSION,
   CURRENT_DATA_SCHEMA_VERSION,
   DATA_SCHEMA_VERSION_KEY,
   compareVersions,
@@ -49,4 +51,14 @@ test("schema 4 preserves history while adding deterministic sequence data", () =
 test("compares native and content versions numerically", () => {
   assert.equal(compareVersions("1.10.0", "1.2.0") > 0, true);
   assert.equal(compareVersions("1.0", "1.0.0"), 0);
+});
+
+test("keeps published metadata and the iPhone cache aligned with the content version", async () => {
+  const metadata = JSON.parse(await readFile(new URL("../public/version.json", import.meta.url), "utf8"));
+  const serviceWorker = await readFile(new URL("../public/sw.js", import.meta.url), "utf8");
+  const cacheVersion = CONTENT_VERSION.replaceAll(".", "-");
+
+  assert.equal(metadata.contentVersion, CONTENT_VERSION);
+  assert.match(serviceWorker, new RegExp(`CACHE_NAME = "angels-fit-shell-v\\d+-${cacheVersion}"`));
+  assert.match(serviceWorker, /version\.json[\s\S]*cache: "no-store"/);
 });

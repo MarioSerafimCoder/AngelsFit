@@ -1,4 +1,4 @@
-const CACHE_NAME = "angels-fit-shell-v9";
+const CACHE_NAME = "angels-fit-shell-v10-2026-08-09-1";
 const APP_SHELL = ["/", "/version.json", "/manifest.webmanifest", "/icon-192.png", "/icon-512.png", "/apple-touch-icon.png"];
 
 self.addEventListener("install", (event) => {
@@ -13,8 +13,20 @@ self.addEventListener("activate", (event) => {
   self.clients.claim();
 });
 
+self.addEventListener("message", (event) => {
+  if (event.data?.type === "SKIP_WAITING") self.skipWaiting();
+});
+
 self.addEventListener("fetch", (event) => {
-  if (event.request.method !== "GET" || new URL(event.request.url).origin !== self.location.origin) return;
+  const requestUrl = new URL(event.request.url);
+  if (event.request.method !== "GET" || requestUrl.origin !== self.location.origin) return;
+
+  if (requestUrl.pathname === "/version.json") {
+    event.respondWith(
+      fetch(event.request, { cache: "no-store" }).catch(() => caches.match("/version.json"))
+    );
+    return;
+  }
 
   if (event.request.mode === "navigate") {
     event.respondWith(
