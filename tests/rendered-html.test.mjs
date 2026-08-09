@@ -14,23 +14,23 @@ async function render() {
   );
 }
 
-test("server-renders the Angels Fit application shell", async () => {
+test("server-renders the AngelsFit application shell", async () => {
   const response = await render();
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
 
   const html = await response.text();
   assert.match(html, /<html lang="pt-BR"/i);
-  assert.match(html, /<title>Angels Fit — Seu treino, seu ritmo<\/title>/i);
+  assert.match(html, /<title>AngelsFit — Seu treino, seu ritmo<\/title>/i);
   assert.match(html, /manifest\.webmanifest/i);
   assert.match(html, /class="loading-screen"/i);
-  assert.match(html, />ANGELS FIT</i);
+  assert.match(html, />ANGELSFIT</i);
   assert.doesNotMatch(html, /codex-preview|Starter Project|Building your site/i);
 });
 
 test("includes check-in, sequence calendar and protected interaction flows", async () => {
   const [app, css, engine, data, postpartum, media, mediaQueries] = await Promise.all([
-    readFile(new URL("../app/FitLocalApp.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/AngelsFitApp.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
     readFile(new URL("../app/workout-engine.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/workout-data.ts", import.meta.url), "utf8"),

@@ -6,25 +6,114 @@
   <array>
     <dict>
       <key>FullScreen</key><true/>
+      <key>Icon</key>
+      <data>
+        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
+        TkSuQmCC
+      </data>
       <key>IsRemovable</key><true/>
-      <key>Label</key><string>Angels Fit</string>
-      <key>PayloadDescription</key><string>Instala o Angels Fit na Tela de Início.</string>
-      <key>PayloadDisplayName</key><string>Angels Fit</string>
+      <key>Label</key><string>AngelsFit</string>
+      <key>PayloadDescription</key><string>Instala o AngelsFit na Tela de Início.</string>
+      <key>PayloadDisplayName</key><string>AngelsFit</string>
       <key>PayloadIdentifier</key><string>com.angelsfit.webclip</string>
       <key>PayloadType</key><string>com.apple.webClip.managed</string>
       <key>PayloadUUID</key><string>F0E1C6A8-7410-4FC8-A8AD-3418A801EFF1</string>
-      <key>PayloadVersion</key><integer>1</integer>
+      <key>PayloadVersion</key><integer>2</integer>
       <key>Precomposed</key><true/>
       <key>URL</key><string>https://fitlocal-mario.mario-92.chatgpt.site</string>
     </dict>
   </array>
-  <key>PayloadDescription</key><string>Perfil pessoal para instalar o Angels Fit em tela cheia no iPhone.</string>
-  <key>PayloadDisplayName</key><string>Instalar Angels Fit</string>
+  <key>PayloadDescription</key><string>Perfil pessoal para instalar o AngelsFit em tela cheia no iPhone.</string>
+  <key>PayloadDisplayName</key><string>Instalar AngelsFit</string>
   <key>PayloadIdentifier</key><string>com.angelsfit.install</string>
-  <key>PayloadOrganization</key><string>Angels Fit</string>
+  <key>PayloadOrganization</key><string>AngelsFit</string>
   <key>PayloadRemovalDisallowed</key><false/>
   <key>PayloadType</key><string>Configuration</string>
   <key>PayloadUUID</key><string>A7F5AA6A-C826-4853-A9E2-70F3B76195CE</string>
-  <key>PayloadVersion</key><integer>1</integer>
+  <key>PayloadVersion</key><integer>2</integer>
 </dict>
 </plist>

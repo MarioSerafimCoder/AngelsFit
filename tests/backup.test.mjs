@@ -29,13 +29,13 @@ test("restores legacy FitLocal and BrasaFit backups with safe defaults", () => {
   assert.equal(backup.settings, undefined);
 });
 
-test("parses a complete Angels Fit backup including preferences", () => {
+test("parses a complete AngelsFit backup including preferences", () => {
   const settings = {
     theme: "light",
     preferences: { sound: true, vibration: false, keepAwake: true, workoutFontSize: "large" },
   };
   const backup = parseBackupJson(JSON.stringify({
-    app: "Angels Fit",
+    app: "AngelsFit",
     version: BACKUP_FORMAT_VERSION,
     exportedAt: "2026-08-09T18:00:00.000Z",
     profile,
@@ -56,7 +56,7 @@ test("rejects malformed, foreign and future backup files", () => {
   assert.throws(() => parseBackupJson("not-json"), BackupValidationError);
   assert.throws(() => parseBackupJson(JSON.stringify({ app: "Outro", version: 1 })), /não foi criado/);
   assert.throws(() => parseBackupJson(JSON.stringify({
-    app: "Angels Fit",
+    app: "AngelsFit",
     version: BACKUP_FORMAT_VERSION + 1,
     exportedAt: "2026-08-09T18:00:00.000Z",
     profile,

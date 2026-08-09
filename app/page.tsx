@@ -1,5 +1,5 @@
-import FitLocalApp from "./FitLocalApp";
+import AngelsFitApp from "./AngelsFitApp";
 
 export default function Home() {
-  return <FitLocalApp />;
+  return <AngelsFitApp />;
 }

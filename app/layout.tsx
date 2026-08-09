@@ -10,13 +10,14 @@ export async function generateMetadata(): Promise<Metadata> {
   const host = headerList.get("x-forwarded-host") ?? headerList.get("host") ?? "localhost:3000";
   const protocol = headerList.get("x-forwarded-proto") ?? (host.includes("localhost") ? "http" : "https");
   const base = new URL(`${protocol}://${host}`);
+  const socialImage = new URL("/og.png", base).toString();
   return {
     metadataBase: base,
-    title: "Angels Fit — Seu treino, seu ritmo",
+    title: "AngelsFit — Seu treino, seu ritmo",
     description: "Treinos pessoais, check-ins de presença e progresso disponíveis mesmo offline.",
-    applicationName: "Angels Fit",
+    applicationName: "AngelsFit",
     manifest: "/manifest.webmanifest",
-    appleWebApp: { capable: true, statusBarStyle: "black-translucent", title: "Angels Fit" },
+    appleWebApp: { capable: true, statusBarStyle: "black-translucent", title: "AngelsFit" },
     formatDetection: { telephone: false },
     icons: {
       icon: [{ url: "/icon-192.png", sizes: "192x192", type: "image/png" }, { url: "/icon-512.png", sizes: "512x512", type: "image/png" }],
@@ -24,11 +25,12 @@ export async function generateMetadata(): Promise<Metadata> {
       apple: [{ url: "/apple-touch-icon.png", sizes: "180x180", type: "image/png" }, { url: "/apple-touch-icon-precomposed.png", sizes: "180x180", type: "image/png" }],
     },
     openGraph: {
-      title: "Angels Fit — Seu treino, seu ritmo",
+      title: "AngelsFit — Seu treino, seu ritmo",
       description: "Seu treino, sua presença e seu progresso — mesmo offline.",
       type: "website",
+      images: [{ url: socialImage, width: 1536, height: 1024, alt: "AngelsFit — Seu treino. Seu ritmo." }],
     },
-    twitter: { card: "summary", title: "Angels Fit", description: "Seu treino. Sua presença. Seu ritmo." },
+    twitter: { card: "summary_large_image", title: "AngelsFit", description: "Seu treino. Sua presença. Seu ritmo.", images: [socialImage] },
   };
 }
 

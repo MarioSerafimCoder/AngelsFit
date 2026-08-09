@@ -22,4 +22,14 @@ test("iPhone home-screen icons are opaque, square and full bleed", async () => {
     await readFile(new URL("../public/apple-touch-icon.png", import.meta.url)),
     await readFile(new URL("../public/apple-touch-icon-precomposed.png", import.meta.url)),
   );
+
+  const standardSvg = await readFile(new URL("../public/icon.svg", import.meta.url), "utf8");
+  const maskableSvg = await readFile(new URL("../public/icon-maskable.svg", import.meta.url), "utf8");
+  const profile = await readFile(new URL("../public/AngelsFit.mobileconfig", import.meta.url), "utf8");
+  const embeddedIcon = profile.match(/<key>Icon<\/key>\s*<data>([\s\S]*?)<\/data>/)?.[1];
+  assert.match(standardSvg, /id="angelsfit-a"/);
+  assert.match(maskableSvg, /id="angelsfit-a"/);
+  assert.doesNotMatch(standardSvg, /brasafit|letter B|letra B/i);
+  assert.ok(embeddedIcon, "the iPhone install profile should embed its icon");
+  assert.deepEqual(Buffer.from(embeddedIcon.replaceAll(/\s/g, ""), "base64"), await readFile(new URL("../public/apple-touch-icon.png", import.meta.url)));
 });

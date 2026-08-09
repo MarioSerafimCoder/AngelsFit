@@ -9,7 +9,7 @@ import {
 export const BACKUP_FORMAT_VERSION = 8;
 export const MAX_BACKUP_FILE_SIZE = 10 * 1024 * 1024;
 
-const COMPATIBLE_APP_NAMES = new Set(["Angels Fit", "BrasaFit", "FitLocal"]);
+const COMPATIBLE_APP_NAMES = new Set(["AngelsFit", "Angels Fit", "BrasaFit", "FitLocal"]);
 const WORKOUT_FONT_SIZES = new Set(["compact", "comfortable", "large"]);
 
 export type BackupPreferences = {
@@ -64,13 +64,13 @@ export function parseBackupJson(raw: string): ParsedBackup {
 
   if (!isObject(value)) throw new BackupValidationError("O arquivo selecionado não contém um backup válido.");
   if (typeof value.app !== "string" || !COMPATIBLE_APP_NAMES.has(value.app)) {
-    throw new BackupValidationError("Este arquivo não foi criado pelo Angels Fit.");
+    throw new BackupValidationError("Este arquivo não foi criado pelo AngelsFit.");
   }
   if (!Number.isInteger(value.version) || (value.version as number) < 1) {
     throw new BackupValidationError("Não foi possível identificar a versão deste backup.");
   }
   if ((value.version as number) > BACKUP_FORMAT_VERSION) {
-    throw new BackupValidationError("Este backup foi criado por uma versão mais nova. Atualize o Angels Fit e tente novamente.");
+    throw new BackupValidationError("Este backup foi criado por uma versão mais nova. Atualize o AngelsFit e tente novamente.");
   }
   if (typeof value.exportedAt !== "string" || !Number.isFinite(Date.parse(value.exportedAt))) {
     throw new BackupValidationError("A data de criação do backup é inválida.");

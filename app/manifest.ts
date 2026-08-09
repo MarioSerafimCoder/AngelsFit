@@ -2,8 +2,8 @@ import type { MetadataRoute } from "next";
 
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: "Angels Fit — Treino Pessoal",
-    short_name: "Angels Fit",
+    name: "AngelsFit — Treino Pessoal",
+    short_name: "AngelsFit",
     description: "Treinos pessoais, progresso e histórico disponíveis offline.",
     start_url: "/",
     display: "standalone",

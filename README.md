@@ -1,4 +1,4 @@
-# Angels Fit
+# AngelsFit
 
 Aplicativo de treino personalizado distribuído como PWA e carregado pelo aplicativo Android `com.angelsfit.app`.
 

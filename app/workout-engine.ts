@@ -362,7 +362,7 @@ export function generateProgram(profile: ProfileForGeneration, context: Generati
       databaseVersion: "4.0",
       status: "clearance_required",
       title: "Liberação necessária",
-      summary: "O Angels Fit não gera treino automático quando há uma condição que precisa de avaliação individual.",
+      summary: "O AngelsFit não gera treino automático quando há uma condição que precisa de avaliação individual.",
       split: "Pausado por segurança",
       workouts: [],
       safetyCodes: codes,

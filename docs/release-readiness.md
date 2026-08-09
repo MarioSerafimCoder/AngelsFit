@@ -2,7 +2,7 @@
 
 ## APK auditado
 
-- Aplicativo: Angels Fit (`com.angelsfit.app`)
+- Aplicativo: AngelsFit (`com.angelsfit.app`)
 - Versão: 1.0 (código 1)
 - Android mínimo: API 23; alvo: API 35
 - Conteúdo remoto: `https://fitlocal-mario.mario-92.chatgpt.site/`
@@ -15,9 +15,9 @@ O APK existente receberá esta atualização remota sem reinstalação. Ele não
 ## Versões publicadas
 
 - Aplicativo Android compatível: 1.0
-- Conteúdo remoto: 2026.08.09.2
+- Conteúdo remoto: 2026.08.09.4
 - Schema local: 4
-- Cache offline: `angels-fit-shell-v9`
+- Cache offline: `angels-fit-shell-v13`
 
 ## Cobertura funcional
 
