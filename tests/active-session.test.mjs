@@ -10,6 +10,7 @@ import {
   normalizeActiveWorkoutSession,
   pauseRest,
   resumeRest,
+  sessionReadiness,
   startRest,
   summarizeActiveSession,
 } from "../app/active-session.ts";
@@ -23,6 +24,13 @@ const exercise = (id, sets = 3) => ({
   loadSuggestion: "",
   targetRpe: "RPE 6",
   note: "",
+});
+
+test("combines today's check-in with the previous workout and keeps blank answers neutral", () => {
+  const blank = createActiveWorkoutSession(workout, 0);
+  assert.equal(sessionReadiness(blank), "alta");
+  assert.equal(sessionReadiness(blank, { sessionRpe: 9, painScore: 4, status: "partial" }), "baixa");
+  assert.equal(sessionReadiness(blank, { painScore: 7 }), "atenção");
 });
 
 const workout = {

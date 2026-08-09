@@ -209,12 +209,31 @@ export function skipRest(session: ActiveWorkoutSession, now = Date.now()): Activ
   return patchActiveSession(session, { restEndsAt: null, restPausedSeconds: null, activeRestExerciseId: null, activeRestSeries: null }, now);
 }
 
-export function sessionReadiness(session: ActiveWorkoutSession): "atenção" | "muito baixa" | "baixa" | "moderada" | "alta" {
-  const penalty = (Number(session.sleepLastNight) < 6 ? 2 : Number(session.sleepLastNight) < 7 ? 1 : 0)
-    + (Number(session.energy) <= 2 ? 2 : Number(session.energy) === 3 ? 1 : 0)
-    + (Number(session.stress) >= 4 ? 2 : Number(session.stress) === 3 ? 1 : 0)
-    + (Number(session.painBefore) >= 4 ? 2 : Number(session.painBefore) >= 2 ? 1 : 0);
-  if (session.newPain || session.postpartumAlert || Number(session.painBefore) >= 7) return "atenção";
+export type PreviousWorkoutReadiness = {
+  status?: string;
+  sessionRpe?: number;
+  painScore?: number;
+  symptoms?: string[];
+  recovery24h?: string;
+};
+
+export function sessionReadiness(session: ActiveWorkoutSession, previousWorkout?: PreviousWorkoutReadiness): "atenção" | "muito baixa" | "baixa" | "moderada" | "alta" {
+  const sleep = session.sleepLastNight === "" ? null : Number(session.sleepLastNight);
+  const energy = session.energy === "" ? null : Number(session.energy);
+  const stress = session.stress === "" ? null : Number(session.stress);
+  const pain = session.painBefore === "" ? null : Number(session.painBefore);
+  const previousPenalty = !previousWorkout ? 0
+    : (previousWorkout.status === "partial" || previousWorkout.status === "interrupted" ? 1 : 0)
+      + ((previousWorkout.sessionRpe || 0) >= 9 ? 2 : (previousWorkout.sessionRpe || 0) >= 8 ? 1 : 0)
+      + ((previousWorkout.painScore || 0) >= 4 ? 2 : (previousWorkout.painScore || 0) >= 2 ? 1 : 0)
+      + ((previousWorkout.symptoms?.length || 0) > 0 ? 2 : 0)
+      + (/ruim|não recuper|dolor/i.test(previousWorkout.recovery24h || "") ? 2 : 0);
+  const penalty = (sleep !== null && sleep < 6 ? 2 : sleep !== null && sleep < 7 ? 1 : 0)
+    + (energy !== null && energy <= 2 ? 2 : energy === 3 ? 1 : 0)
+    + (stress !== null && stress >= 4 ? 2 : stress === 3 ? 1 : 0)
+    + (pain !== null && pain >= 4 ? 2 : pain !== null && pain >= 2 ? 1 : 0)
+    + previousPenalty;
+  if (session.newPain || session.postpartumAlert || (pain !== null && pain >= 7) || (previousWorkout?.painScore || 0) >= 7) return "atenção";
   if (penalty >= 6) return "muito baixa";
   if (penalty >= 4) return "baixa";
   if (penalty >= 2) return "moderada";

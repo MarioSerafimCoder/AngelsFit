@@ -1,6 +1,7 @@
 import { Exercise, exerciseById, exercises } from "./workout-data";
 import { POSTPARTUM_BLOCKS, PostpartumPrescription } from "./postpartum-program";
 import { calculateAdherence, evaluatePhase, recommendedWorkoutIndex, type TrainingHistoryLike } from "./training-intelligence";
+import { defaultRestSeconds } from "./rest-policy";
 
 export type ProfileForGeneration = {
   goal: string;
@@ -152,13 +153,14 @@ function safetyNotices(codes: string[]) {
   return notices;
 }
 
-function scheme(profile: ProfileForGeneration) {
+function scheme(profile: ProfileForGeneration, safetyCodes: string[]) {
   const beginner = profile.experience === "Iniciante" || profile.goal === "Retorno aos treinos";
-  if (profile.goal === "Força") return { sets: beginner ? 3 : 4, reps: beginner ? "6–8" : "4–6", rest: beginner ? 90 : 150, tempo: "2–1–2", rpe: beginner ? "RPE 6" : "RPE 7" };
-  if (profile.goal === "Condicionamento") return { sets: beginner ? 2 : 3, reps: "10–15", rest: beginner ? 60 : 45, tempo: "controlado", rpe: beginner ? "RPE 5–6" : "RPE 7" };
-  if (profile.goal === "Mobilidade") return { sets: 2, reps: "6–10 lentas", rest: 40, tempo: "3–2–3", rpe: "RPE 4–5" };
-  if (profile.goal === "Retorno aos treinos") return { sets: 2, reps: "8–12", rest: 75, tempo: "3–1–2", rpe: "RPE 5–6" };
-  return { sets: beginner ? 2 : 3, reps: "8–12", rest: beginner ? 75 : 90, tempo: "3–1–2", rpe: beginner ? "RPE 6" : "RPE 7–8" };
+  const rest = defaultRestSeconds(profile, safetyCodes);
+  if (profile.goal === "Força") return { sets: beginner ? 3 : 4, reps: beginner ? "6–8" : "4–6", rest, tempo: "2–1–2", rpe: beginner ? "RPE 6" : "RPE 7" };
+  if (profile.goal === "Condicionamento") return { sets: beginner ? 2 : 3, reps: "10–15", rest, tempo: "controlado", rpe: beginner ? "RPE 5–6" : "RPE 7" };
+  if (profile.goal === "Mobilidade") return { sets: 2, reps: "6–10 lentas", rest, tempo: "3–2–3", rpe: "RPE 4–5" };
+  if (profile.goal === "Retorno aos treinos") return { sets: 2, reps: "8–12", rest, tempo: "3–1–2", rpe: "RPE 5–6" };
+  return { sets: beginner ? 2 : 3, reps: "8–12", rest, tempo: "3–1–2", rpe: beginner ? "RPE 6" : "RPE 7–8" };
 }
 
 function workoutTemplates(days: number) {
@@ -188,7 +190,7 @@ function isAllowed(exercise: Exercise, profile: ProfileForGeneration, avoidCodes
 function prescribe(exercise: Exercise, profile: ProfileForGeneration, codes: string[], section: "warmup" | "main" | "cooldown", setAdjustment = 0, progressionInstruction = ""): GeneratedExercise {
   if (section === "warmup") return { exercise, sets: 1, reps: "4–6 min", rest: 0, tempo: "leve", loadSuggestion: "Sem carga", targetRpe: "RPE 3–4", note: "Prepare o corpo sem fadigar." };
   if (section === "cooldown") return { exercise, sets: 1, reps: "45–60 s", rest: 0, tempo: "confortável", loadSuggestion: "Sem carga", targetRpe: "RPE 2–3", note: "Sem forçar amplitude." };
-  const base = scheme(profile);
+  const base = scheme(profile, codes);
   const conservative = codes.some((code) => ["postpartum", "cesarean", "hypertension", "cardiovascular", "back", "knee", "shoulder"].includes(code));
   return {
     exercise,
