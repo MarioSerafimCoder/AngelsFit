@@ -25,4 +25,5 @@ As migrações 1 → 2 → 3 são sequenciais, idempotentes e preservam campos d
 
 - Não há sincronização remota porque o site público e o APK não possuem identidade segura por usuário. Ativar D1 nesse cenário poderia misturar ou expor dados de saúde.
 - O IndexedDB reduz falhas e corrupção locais, mas não protege contra limpeza ou perda total do aparelho. O backup exportável continua recomendado.
+- Backups podem ser restaurados na primeira tela após uma reinstalação ou em Ajustes. O arquivo é validado antes da confirmação, versões antigas de FitLocal e BrasaFit permanecem compatíveis e um snapshot automático permite reverter uma restauração interrompida.
 - O projeto Android/Capacitor não está no repositório. Recursos nativos opcionais usam fallback web até que o código nativo e plugins sejam recuperados.

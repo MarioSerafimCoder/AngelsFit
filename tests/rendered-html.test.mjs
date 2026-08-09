@@ -43,6 +43,9 @@ test("includes check-in, sequence calendar and protected interaction flows", asy
   assert.match(app, /Check-in registrado/);
   assert.match(app, /Descartar alterações\?/);
   assert.match(app, /Descartar sessão/);
+  assert.match(app, /Restaurar meu backup/);
+  assert.match(app, /Recuperar um backup/);
+  assert.match(app, /Backup restaurado com sucesso/);
   assert.match(app, /TREINO DO DIA/);
   assert.doesNotMatch(css, /avatar-button::after/);
   assert.match(app, /Calendário de próximos treinos/);

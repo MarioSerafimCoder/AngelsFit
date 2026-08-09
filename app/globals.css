@@ -150,6 +150,38 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .confirm-dialog > div:last-child { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
 .confirm-dialog button { min-height: 50px; border: 1px solid var(--line); border-radius: 15px; background: var(--surface); font-weight: 750; }
 .confirm-dialog button.danger { border-color: #ff7043; background: #ff7043; color: #160b07; }
+.restore-backup-button { width: 100%; min-height: 62px; display: flex; align-items: center; gap: 12px; margin-top: 10px; padding: 11px 14px; border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--line)); border-radius: 17px; background: color-mix(in srgb, var(--accent) 7%, var(--surface)); color: var(--text); text-align: left; }
+.restore-backup-button > span { width: 38px; height: 38px; display: grid; place-items: center; flex: 0 0 auto; border-radius: 12px; background: var(--accent-soft); color: var(--accent); font-size: 19px; font-weight: 900; }
+.restore-backup-button > div { display: grid; gap: 3px; }
+.restore-backup-button strong { font-size: 13px; }
+.restore-backup-button small { color: var(--muted); font-size: 11px; }
+.profile-tab { padding-bottom: calc(28px + env(safe-area-inset-bottom)); }
+.profile-tab > .screen { padding-bottom: 18px; }
+.backup-management-card { display: grid; grid-template-columns: 46px 1fr; gap: 13px; margin: 0 18px; padding: 17px; border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--line)); border-radius: 21px; background: linear-gradient(145deg, var(--accent-soft), var(--surface)); }
+.backup-management-card > span { width: 46px; height: 46px; display: grid; place-items: center; border-radius: 14px; background: var(--accent); color: #15100b; font-size: calc(20px + var(--app-font-boost, 0px)); font-weight: 900; }
+.backup-management-card > div { min-width: 0; }
+.backup-management-card p { margin: 1px 0 4px; color: var(--accent); font-size: calc(9px + var(--app-font-boost, 0px)); font-weight: 850; letter-spacing: .1em; }
+.backup-management-card h2 { margin: 0; font-size: calc(18px + var(--app-font-boost, 0px)); }
+.backup-management-card small { display: block; margin-top: 5px; color: var(--muted); font-size: calc(11px + var(--app-font-boost, 0px)); line-height: 1.45; }
+.backup-management-card button { min-height: 46px; margin-top: 13px; padding: 0 15px; border: 0; border-radius: 14px; background: var(--accent); color: #15100b; font-size: calc(12px + var(--app-font-boost, 0px)); font-weight: 850; }
+.backup-dialog { width: min(100%, 440px); max-height: min(86dvh, 720px); overflow-y: auto; padding: 22px; border: 1px solid var(--line); border-radius: 24px; background: var(--surface-2); box-shadow: var(--shadow); }
+.backup-dialog-icon { width: 46px; height: 46px; display: grid; place-items: center; margin-bottom: 14px; border-radius: 14px; background: var(--accent); color: #15100b; font-size: 21px; font-weight: 900; }
+.backup-dialog > .eyebrow { margin: 0 0 6px; }
+.backup-dialog h2 { margin: 0; font-size: calc(23px + var(--app-font-boost, 0px)); line-height: 1.12; }
+.backup-dialog > p:not(.eyebrow):not(.backup-safety-note) { margin: 9px 0 18px; color: var(--muted); font-size: calc(12px + var(--app-font-boost, 0px)); line-height: 1.5; }
+.backup-summary { margin: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 16px; background: var(--surface); }
+.backup-summary > div { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 11px 13px; border-bottom: 1px solid var(--line); }
+.backup-summary > div:last-child { border-bottom: 0; }
+.backup-summary dt { color: var(--muted); font-size: calc(10px + var(--app-font-boost, 0px)); }
+.backup-summary dd { margin: 0; color: var(--text); font-size: calc(11px + var(--app-font-boost, 0px)); font-weight: 800; text-align: right; }
+.backup-safety-note { margin: 13px 0 17px; padding: 11px 12px; border-radius: 14px; background: var(--accent-soft); color: var(--muted); font-size: calc(10px + var(--app-font-boost, 0px)); line-height: 1.45; }
+.backup-dialog-actions { display: grid; grid-template-columns: .85fr 1.4fr; gap: 9px; }
+.backup-dialog-actions button, .backup-error-close { min-height: 50px; border: 1px solid var(--line); border-radius: 15px; background: var(--surface); color: var(--text); font-weight: 800; }
+.backup-dialog-actions .restore-confirm, .backup-error-close { border-color: var(--accent); background: var(--accent); color: #15100b; }
+.backup-dialog-actions button:disabled { opacity: .55; }
+.backup-error-dialog { text-align: center; }
+.backup-error-dialog .dialog-icon { margin-inline: auto; }
+.backup-error-close { width: 100%; }
 .preview-header { position: sticky; z-index: 12; top: 0; display: flex; justify-content: space-between; align-items: center; padding: calc(12px + env(safe-area-inset-top)) 0 12px; background: color-mix(in srgb, var(--bg) 94%, transparent); backdrop-filter: blur(18px); }
 .preview-header button { min-height: 44px; border: 0; background: transparent; color: var(--accent); font-size: calc(12px + var(--app-font-boost, 0px)); font-weight: 800; }
 .preview-header span { color: var(--muted); font-size: calc(11px + var(--app-font-boost, 0px)); }

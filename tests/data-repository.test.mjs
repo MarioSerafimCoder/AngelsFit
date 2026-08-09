@@ -39,6 +39,19 @@ class MemoryMirror {
   }
 }
 
+class FailOnceStorage extends MemoryStorage {
+  failKey = null;
+  failed = false;
+
+  setItem(key, value) {
+    if (key === this.failKey && !this.failed) {
+      this.failed = true;
+      throw new Error("Storage full");
+    }
+    super.setItem(key, value);
+  }
+}
+
 const profile = {
   id: "mario",
   name: "Mário",
@@ -129,6 +142,42 @@ test("creates and restores an integrity-checked snapshot", async () => {
   assert.equal(await repository.restoreLatestSnapshot(), true);
 
   assert.deepEqual(JSON.parse(primary.getItem(CRITICAL_STORAGE_KEYS.profile)), profile);
+});
+
+test("snapshot restoration removes records that were previously absent", async () => {
+  const primary = new MemoryStorage();
+  const mirror = new MemoryMirror();
+  const repository = new CriticalDataRepository(primary, mirror);
+  const activeSession = { schemaVersion: 1, id: "session-1", status: "active", createdAt: "2026-08-06T12:00:00.000Z", updatedAt: "2026-08-06T12:00:00.000Z", workout: { id: "a" }, currentExerciseIndex: 0, completedSeries: {}, loads: {}, actualReps: {} };
+  await repository.write("profile", profile);
+  await repository.createSnapshot();
+  await repository.write("activeSession", activeSession);
+
+  assert.equal(await repository.restoreLatestSnapshot(), true);
+  assert.equal(primary.getItem(CRITICAL_STORAGE_KEYS.activeSession), null);
+  assert.equal(await mirror.get(CRITICAL_STORAGE_KEYS.activeSession), null);
+});
+
+test("complete replacement rolls back every record when a write fails", async () => {
+  const primary = new FailOnceStorage();
+  const repository = new CriticalDataRepository(primary);
+  await repository.write("profile", profile);
+  await repository.write("history", []);
+  await repository.write("measurements", []);
+  await repository.write("checkIns", []);
+  primary.failKey = CRITICAL_STORAGE_KEYS.history;
+
+  await assert.rejects(repository.replaceAll({
+    profile: { ...profile, name: "Restaurado" },
+    history: [{ id: "h1", workoutName: "Treino A", completedAt: "2026-08-09T12:00:00.000Z" }],
+    measurements: [],
+    checkIns: [],
+    activeSession: null,
+  }), /Storage full/);
+
+  const result = await repository.load();
+  assert.deepEqual(result.data.profile, profile);
+  assert.deepEqual(result.data.history, []);
 });
 
 test("removes a completed active session from both stores", async () => {

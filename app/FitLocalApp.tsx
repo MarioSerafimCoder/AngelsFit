@@ -12,7 +12,8 @@ import { getBrowserDataRepository } from "./data-repository";
 import { ActiveWorkoutSession, addRestSeconds, beginActiveSession, effectiveSets, enterFeedback, getElapsedSeconds, getRestRemainingSeconds, normalizeActiveWorkoutSession, patchActiveSession, pauseRest, resumeRest, sessionReadiness, skipRest, startRest, createActiveWorkoutSession, summarizeActiveSession } from "./active-session";
 import { APP_VERSION, CONTENT_VERSION, CURRENT_DATA_SCHEMA_VERSION, LAST_UPDATE_CHECK_KEY, MINIMUM_SUPPORTED_APP_VERSION, compareVersions, runDataMigrations, validateVersionMetadata } from "./versioning";
 import { configureNativeChrome, getInstalledAppVersion, hapticImpact, isNativeApp, openExternal, registerNativeBackButton } from "./native-platform";
-import { applyReturnAdaptation, buildCalendarSchedule, calculateAdherence, completedSequenceCount, eligibleProtocols, getReturnAdaptation, recommendedWorkoutIndex, toLocalDateKey, type ExercisePerformanceRecord, type TrainingHistoryLike, type TrainingSessionStatus } from "./training-intelligence";
+import { applyReturnAdaptation, buildCalendarSchedule, calculateAdherence, completedSequenceCount, eligibleProtocols, getReturnAdaptation, migrateTrainingHistory, recommendedWorkoutIndex, toLocalDateKey, type ExercisePerformanceRecord, type TrainingHistoryLike, type TrainingSessionStatus } from "./training-intelligence";
+import { BACKUP_FORMAT_VERSION, BackupValidationError, MAX_BACKUP_FILE_SIZE, parseBackupJson, type ParsedBackup } from "./backup";
 
 type AppTab = "today" | "program" | "exercises" | "progress" | "profile";
 
@@ -209,6 +210,10 @@ export default function FitLocalApp() {
   const [checkIns, setCheckIns] = useState<CheckIn[]>([]);
   const [previewWorkout, setPreviewWorkout] = useState<GeneratedWorkout | null>(null);
   const [discardProfilePrompt, setDiscardProfilePrompt] = useState(false);
+  const [pendingBackup, setPendingBackup] = useState<ParsedBackup | null>(null);
+  const [backupError, setBackupError] = useState("");
+  const [restoringBackup, setRestoringBackup] = useState(false);
+  const backupInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     const storedTheme = window.localStorage.getItem(THEME_KEY);
@@ -398,7 +403,21 @@ export default function FitLocalApp() {
 
   function exportBackup() {
     if (!profile) return;
-    const backup = { app: "Angels Fit", version: 7, databaseVersion: EXERCISE_DATABASE_VERSION, exportedAt: new Date().toISOString(), profile, program, history, checkIns, measurements };
+    const backup = {
+      app: "Angels Fit",
+      version: BACKUP_FORMAT_VERSION,
+      dataSchemaVersion: CURRENT_DATA_SCHEMA_VERSION,
+      databaseVersion: EXERCISE_DATABASE_VERSION,
+      contentVersion: CONTENT_VERSION,
+      exportedAt: new Date().toISOString(),
+      profile,
+      program,
+      history,
+      checkIns,
+      measurements,
+      activeSession,
+      settings: { theme, preferences },
+    };
     const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
@@ -406,6 +425,97 @@ export default function FitLocalApp() {
     link.download = `angels-fit-backup-${new Date().toISOString().slice(0, 10)}.json`;
     link.click();
     URL.revokeObjectURL(url);
+  }
+
+  function openBackupPicker() {
+    setBackupError("");
+    backupInputRef.current?.click();
+  }
+
+  async function handleBackupSelection(event: ChangeEvent<HTMLInputElement>) {
+    const input = event.currentTarget;
+    const file = input.files?.[0];
+    input.value = "";
+    if (!file) return;
+    setBackupError("");
+    if (file.size > MAX_BACKUP_FILE_SIZE) {
+      setBackupError("O arquivo é grande demais. Selecione um backup do Angels Fit com até 10 MB.");
+      return;
+    }
+    try {
+      setPendingBackup(parseBackupJson(await file.text()));
+    } catch (error) {
+      setBackupError(error instanceof BackupValidationError ? error.message : "Não foi possível ler este arquivo de backup.");
+    }
+  }
+
+  async function restoreBackup() {
+    if (!pendingBackup || restoringBackup) return;
+    setRestoringBackup(true);
+    const previousTheme = window.localStorage.getItem(THEME_KEY);
+    const previousPreferences = window.localStorage.getItem(PREFERENCES_KEY);
+    try {
+      const parsedProfile = pendingBackup.profile as Profile;
+      const normalizedProfile: Profile = {
+        ...initialProfile,
+        ...parsedProfile,
+        specialConditions: parsedProfile.specialConditions || [],
+        secondaryGoals: parsedProfile.secondaryGoals || [],
+        availableEquipment: parsedProfile.availableEquipment || [],
+        postpartumSymptoms: parsedProfile.postpartumSymptoms || [],
+        medicalClearance: parsedProfile.medicalClearance || false,
+      };
+      const restoredHistory = migrateTrainingHistory(pendingBackup.history as TrainingHistoryLike[]) as WorkoutHistory[];
+      const restoredMeasurements = pendingBackup.measurements as BodyMeasurement[];
+      const restoredCheckIns = pendingBackup.checkIns as CheckIn[];
+      const restoredActiveSession = pendingBackup.activeSession
+        ? normalizeActiveWorkoutSession(pendingBackup.activeSession as ActiveWorkoutSession)
+        : null;
+
+      if (pendingBackup.settings) {
+        window.localStorage.setItem(THEME_KEY, pendingBackup.settings.theme);
+        window.localStorage.setItem(PREFERENCES_KEY, JSON.stringify(pendingBackup.settings.preferences));
+      }
+      await getBrowserDataRepository().replaceAll({
+        profile: normalizedProfile,
+        history: restoredHistory,
+        measurements: restoredMeasurements,
+        checkIns: restoredCheckIns,
+        activeSession: restoredActiveSession,
+      });
+
+      setProfile(normalizedProfile);
+      setDraft(normalizedProfile);
+      setHistory(restoredHistory);
+      setMeasurements(restoredMeasurements);
+      setCheckIns(restoredCheckIns);
+      setActiveSession(restoredActiveSession);
+      setSessionOpen(false);
+      setEditingProfile(false);
+      setStep(0);
+      setTab("today");
+      if (pendingBackup.settings) {
+        setTheme(pendingBackup.settings.theme);
+        setPreferences(pendingBackup.settings.preferences);
+        document.documentElement.dataset.theme = pendingBackup.settings.theme;
+      }
+      setPendingBackup(null);
+      setSavedMessage("Backup restaurado com sucesso");
+      window.setTimeout(() => setSavedMessage(""), 3200);
+    } catch {
+      try {
+        if (previousTheme === null) window.localStorage.removeItem(THEME_KEY);
+        else window.localStorage.setItem(THEME_KEY, previousTheme);
+        if (previousPreferences === null) window.localStorage.removeItem(PREFERENCES_KEY);
+        else window.localStorage.setItem(PREFERENCES_KEY, previousPreferences);
+      } catch {
+        // Critical training data already uses the repository snapshot rollback.
+      }
+      setPendingBackup(null);
+      setBackupError("A restauração não pôde ser concluída. Os dados que estavam no aparelho foram preservados.");
+    } finally {
+      setRestoringBackup(false);
+    }
   }
 
   function openProfileEditor() {
@@ -567,6 +677,7 @@ export default function FitLocalApp() {
   if (!profile) {
     return (
       <main className="onboarding-shell">
+        <input ref={backupInputRef} className="sr-only" type="file" accept=".json,application/json" aria-label="Selecionar arquivo de backup do Angels Fit" onChange={handleBackupSelection} />
         <div className="onboarding-top">
           <div className="wordmark"><div className="brand-mark" aria-hidden="true"><span /></div>ANGELS FIT</div>
           {step > 0 && <button className="text-button" onClick={() => setStep((current) => Math.max(0, current - 1))}>Voltar</button>}
@@ -589,6 +700,7 @@ export default function FitLocalApp() {
             <h1>Seu treino.<br /><em>Seu ritmo.</em></h1>
             <p className="lead">Uma rotina construída para você, disponível mesmo quando estiver sem internet.</p>
             <button className="primary-button" onClick={() => setStep(1)}>Criar meu perfil <span>→</span></button>
+            <button className="restore-backup-button" type="button" onClick={openBackupPicker}><span aria-hidden="true">↥</span><div><strong>Restaurar meu backup</strong><small>Recuperar perfil, treinos e evolução</small></div></button>
             <p className="privacy-note">Seus dados começam salvos somente neste aparelho.</p>
           </section>
         )}
@@ -645,6 +757,8 @@ export default function FitLocalApp() {
             <button className="primary-button" type="submit">Concluir meu perfil <span>✓</span></button>
           </form>
         )}
+        {pendingBackup && <BackupRestoreDialog backup={pendingBackup} restoring={restoringBackup} onConfirm={restoreBackup} onCancel={() => setPendingBackup(null)} />}
+        {backupError && <BackupErrorDialog message={backupError} onClose={() => setBackupError("")} />}
       </main>
     );
   }
@@ -658,7 +772,7 @@ export default function FitLocalApp() {
     program: <Program profile={profile} program={program!} previewWorkout={setPreviewWorkout} openExercises={() => setTab("exercises")} onEditProfile={openProfileEditor} />,
     exercises: <Exercises onBack={() => setTab("program")} />,
     progress: <Progress profile={profile} history={history} checkIns={checkIns} measurements={measurements} setTab={setTab} />,
-    profile: <ProfileView profile={profile} draft={draft} setDraft={setDraft} editing={editingProfile} setEditing={setEditingProfile} cancelEditing={cancelProfileEdit} saveProfile={saveProfile} handlePhoto={handlePhoto} toggleDay={toggleDay} toggleSpecialCondition={toggleSpecialCondition} toggleListField={toggleListField} theme={theme} changeTheme={changeTheme} exportBackup={exportBackup} preferences={preferences} changePreference={changePreference} installedAppVersion={installedAppVersion} updateStatus={updateStatus} lastUpdateCheck={lastUpdateCheck} updateApplication={updateApplication} />,
+    profile: <div className="profile-tab"><ProfileView profile={profile} draft={draft} setDraft={setDraft} editing={editingProfile} setEditing={setEditingProfile} cancelEditing={cancelProfileEdit} saveProfile={saveProfile} handlePhoto={handlePhoto} toggleDay={toggleDay} toggleSpecialCondition={toggleSpecialCondition} toggleListField={toggleListField} theme={theme} changeTheme={changeTheme} exportBackup={exportBackup} preferences={preferences} changePreference={changePreference} installedAppVersion={installedAppVersion} updateStatus={updateStatus} lastUpdateCheck={lastUpdateCheck} updateApplication={updateApplication} />{!editingProfile && <section className="backup-management-card"><span aria-hidden="true">↥</span><div><p>RESTAURAÇÃO SEGURA</p><h2>Recuperar um backup</h2><small>Revise o conteúdo do arquivo antes de substituir os dados deste aparelho.</small><button type="button" onClick={openBackupPicker}>Selecionar backup</button></div></section>}</div>,
   }[tab];
 
   const showBottomNav = !editingProfile && !previewWorkout;
@@ -672,6 +786,7 @@ export default function FitLocalApp() {
 
   return (
     <main className={`app-shell app-font-${preferences.workoutFontSize}`} onClickCapture={redirectIosProfileInstall}><div className="mobile-app">
+      <input ref={backupInputRef} className="sr-only" type="file" accept=".json,application/json" aria-label="Selecionar arquivo de backup do Angels Fit" onChange={handleBackupSelection} />
       {savedMessage && <div className="toast">✓ {savedMessage}</div>}
       <div className={`app-content ${showBottomNav ? "" : "without-nav"}`}>{previewWorkout ? <WorkoutPreview workout={previewWorkout} onBack={() => setPreviewWorkout(null)} onStart={() => { setPreviewWorkout(null); startWorkout(previewWorkout); }} /> : tabContent}</div>
       {showBottomNav && <nav className="bottom-nav" aria-label="Navegação principal">
@@ -682,6 +797,8 @@ export default function FitLocalApp() {
       </nav>}
       {discardProfilePrompt && <ConfirmDialog title="Descartar alterações?" description="As mudanças feitas no perfil ainda não foram salvas." confirmLabel="Descartar" onConfirm={discardProfileChanges} onCancel={() => setDiscardProfilePrompt(false)} />}
       {endSessionPrompt && activeSession && <ConfirmDialog title="Encerrar sessão?" description="O progresso atual será salvo como treino parcialmente concluído." confirmLabel="Salvar e encerrar" onConfirm={() => finishWorkout(activeSession, "partial")} onCancel={() => setEndSessionPrompt(false)} />}
+      {pendingBackup && <BackupRestoreDialog backup={pendingBackup} restoring={restoringBackup} onConfirm={restoreBackup} onCancel={() => setPendingBackup(null)} />}
+      {backupError && <BackupErrorDialog message={backupError} onClose={() => setBackupError("")} />}
     </div></main>
   );
 }
@@ -692,6 +809,35 @@ function NavButton({ active, label, icon, onClick }: { active: boolean; label: s
 
 function ConfirmDialog({ title, description, confirmLabel, onConfirm, onCancel }: { title: string; description: string; confirmLabel: string; onConfirm: () => void; onCancel: () => void }) {
   return <div className="dialog-backdrop" role="presentation"><section className="confirm-dialog" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby="confirm-description"><div className="dialog-icon" aria-hidden="true">!</div><h2 id="confirm-title">{title}</h2><p id="confirm-description">{description}</p><div><button onClick={onCancel}>Continuar</button><button className="danger" onClick={onConfirm}>{confirmLabel}</button></div></section></div>;
+}
+
+function BackupRestoreDialog({ backup, restoring, onConfirm, onCancel }: { backup: ParsedBackup; restoring: boolean; onConfirm: () => void; onCancel: () => void }) {
+  const restoredProfile = backup.profile as Profile;
+  const exportedLabel = new Intl.DateTimeFormat("pt-BR", { dateStyle: "short", timeStyle: "short" }).format(new Date(backup.exportedAt));
+  return (
+    <div className="dialog-backdrop" role="presentation">
+      <section className="backup-dialog" role="dialog" aria-modal="true" aria-labelledby="backup-dialog-title" aria-describedby="backup-dialog-description">
+        <div className="backup-dialog-icon" aria-hidden="true">↥</div>
+        <p className="eyebrow">BACKUP ENCONTRADO</p>
+        <h2 id="backup-dialog-title">Restaurar dados de {restoredProfile.name}?</h2>
+        <p id="backup-dialog-description">Confira o conteúdo antes de substituir os dados salvos neste aparelho.</p>
+        <dl className="backup-summary">
+          <div><dt>Criado em</dt><dd>{exportedLabel}</dd></div>
+          <div><dt>Treinos no histórico</dt><dd>{backup.history.length}</dd></div>
+          <div><dt>Check-ins</dt><dd>{backup.checkIns.length}</dd></div>
+          <div><dt>Medições</dt><dd>{backup.measurements.length}</dd></div>
+          <div><dt>Treino em andamento</dt><dd>{backup.activeSession ? "Sim" : "Não"}</dd></div>
+          <div><dt>Preferências do app</dt><dd>{backup.settings ? "Incluídas" : "Manter atuais"}</dd></div>
+        </dl>
+        <p className="backup-safety-note">Antes da restauração, o Angels Fit cria uma cópia de segurança dos dados atuais para poder recuperá-los se algo falhar.</p>
+        <div className="backup-dialog-actions"><button type="button" disabled={restoring} onClick={onCancel}>Cancelar</button><button className="restore-confirm" type="button" disabled={restoring} onClick={onConfirm}>{restoring ? "Restaurando…" : "Restaurar backup"}</button></div>
+      </section>
+    </div>
+  );
+}
+
+function BackupErrorDialog({ message, onClose }: { message: string; onClose: () => void }) {
+  return <div className="dialog-backdrop" role="presentation"><section className="backup-dialog backup-error-dialog" role="alertdialog" aria-modal="true" aria-labelledby="backup-error-title"><div className="dialog-icon" aria-hidden="true">!</div><h2 id="backup-error-title">Não foi possível restaurar</h2><p>{message}</p><button className="backup-error-close" type="button" onClick={onClose}>Entendi</button></section></div>;
 }
 
 function ScreenHeader({ title, profile, kicker, onProfileClick }: { title: string; profile: Profile; kicker?: string; onProfileClick?: () => void }) {

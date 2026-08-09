@@ -239,6 +239,30 @@ export class CriticalDataRepository {
     }
   }
 
+  async replaceAll(data: CriticalData): Promise<void> {
+    for (const recordName of Object.keys(RECORDS) as CriticalRecordName[]) {
+      const value = data[recordName];
+      const nullable = recordName === "profile" || recordName === "activeSession";
+      if (value === null) {
+        if (!nullable) throw new Error(`Invalid critical record: ${recordName}`);
+        continue;
+      }
+      if (!RECORDS[recordName].validate(value)) throw new Error(`Invalid critical record: ${recordName}`);
+    }
+
+    await this.createSnapshot();
+    try {
+      for (const recordName of Object.keys(RECORDS) as CriticalRecordName[]) {
+        const value = data[recordName];
+        if (value === null) await this.remove(recordName);
+        else await this.write(recordName, value);
+      }
+    } catch (error) {
+      await this.restoreLatestSnapshot();
+      throw error;
+    }
+  }
+
   async createSnapshot(): Promise<string> {
     const records = Object.fromEntries(
       (Object.keys(RECORDS) as CriticalRecordName[]).map((recordName) => {
@@ -270,6 +294,10 @@ export class CriticalDataRepository {
       for (const recordName of Object.keys(RECORDS) as CriticalRecordName[]) {
         const descriptor = RECORDS[recordName];
         const recordPayload = snapshot.records[descriptor.key];
+        if (recordPayload === null) {
+          await this.remove(recordName);
+          continue;
+        }
         if (typeof recordPayload !== "string" || parseRecord(recordPayload, descriptor.validate) === null) continue;
         this.primary.setItem(descriptor.key, recordPayload);
         await this.saveMirror(descriptor.key, recordPayload);
