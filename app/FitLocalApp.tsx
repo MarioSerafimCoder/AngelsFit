@@ -84,6 +84,12 @@ type AppPreferences = {
   workoutFontSize: "compact" | "comfortable" | "large";
 };
 
+const workoutFontSizes: AppPreferences["workoutFontSize"][] = ["compact", "comfortable", "large"];
+
+function isWorkoutFontSize(value: unknown): value is AppPreferences["workoutFontSize"] {
+  return typeof value === "string" && workoutFontSizes.includes(value as AppPreferences["workoutFontSize"]);
+}
+
 type UpdateStatus = "idle" | "checking" | "current" | "available" | "offline" | "error" | "native-required";
 
 const defaultPreferences: AppPreferences = { sound: false, vibration: true, keepAwake: true, workoutFontSize: "comfortable" };
@@ -210,7 +216,14 @@ export default function FitLocalApp() {
     const nextTheme = storedTheme === "light" ? "light" : "dark";
     setTheme(nextTheme);
     if (storedPreferences) {
-      try { setPreferences({ ...defaultPreferences, ...JSON.parse(storedPreferences) as Partial<AppPreferences> }); } catch { /* keep safe defaults */ }
+      try {
+        const parsed = JSON.parse(storedPreferences) as Partial<AppPreferences>;
+        setPreferences({
+          ...defaultPreferences,
+          ...parsed,
+          workoutFontSize: isWorkoutFontSize(parsed.workoutFontSize) ? parsed.workoutFontSize : defaultPreferences.workoutFontSize,
+        });
+      } catch { /* keep safe defaults */ }
     }
     setLastUpdateCheck(window.localStorage.getItem(LAST_UPDATE_CHECK_KEY));
     document.documentElement.dataset.theme = nextTheme;
@@ -630,7 +643,7 @@ export default function FitLocalApp() {
   }
 
   if (activeSession && sessionOpen) {
-    return <AdaptiveWorkoutSession session={activeSession} preferences={preferences} onExit={() => setSessionOpen(false)} onPersist={persistActiveSession} onFinish={(session) => finishWorkout(session)} />;
+    return <div className={`workout-font-${preferences.workoutFontSize}`}><AdaptiveWorkoutSession session={activeSession} preferences={preferences} onExit={() => setSessionOpen(false)} onPersist={persistActiveSession} onFinish={(session) => finishWorkout(session)} /></div>;
   }
 
   const tabContent = {
@@ -654,7 +667,6 @@ export default function FitLocalApp() {
     <main className="app-shell" onClickCapture={redirectIosProfileInstall}><div className="mobile-app">
       {savedMessage && <div className="toast">✓ {savedMessage}</div>}
       <div className={`app-content ${showBottomNav ? "" : "without-nav"}`}>{previewWorkout ? <WorkoutPreview workout={previewWorkout} onBack={() => setPreviewWorkout(null)} onStart={() => { setPreviewWorkout(null); startWorkout(previewWorkout); }} /> : tabContent}</div>
-      {tab === "profile" && !editingProfile && <WorkoutFontSizeSetting value={preferences.workoutFontSize} onChange={(value) => changePreference("workoutFontSize", value)} />}
       {showBottomNav && <nav className="bottom-nav" aria-label="Navegação principal">
         <NavButton active={tab === "today"} label="Hoje" icon="⌂" onClick={() => setTab("today")} />
         <NavButton active={tab === "program" || tab === "exercises"} label="Treinos" icon="▤" onClick={() => setTab("program")} />
@@ -1345,19 +1357,46 @@ function PrescriptionProfileFields({ draft, setDraft, toggleListField }: { draft
 type ProfileViewProps = { profile: Profile; draft: Profile; setDraft: (profile: Profile) => void; editing: boolean; setEditing: (value: boolean) => void; cancelEditing: () => void; saveProfile: (event?: FormEvent) => void; handlePhoto: (event: ChangeEvent<HTMLInputElement>) => void; toggleDay: (day: string) => void; toggleSpecialCondition: (condition: string) => void; toggleListField: (field: "secondaryGoals" | "availableEquipment" | "postpartumSymptoms", value: string) => void; theme: "dark" | "light"; changeTheme: () => void; exportBackup: () => void; preferences: AppPreferences; changePreference: <K extends keyof AppPreferences>(name: K, value: AppPreferences[K]) => void; installedAppVersion: string; updateStatus: UpdateStatus; lastUpdateCheck: string | null; updateApplication: () => void };
 
 function WorkoutFontSizeSetting({ value, onChange }: { value: AppPreferences["workoutFontSize"]; onChange: (value: AppPreferences["workoutFontSize"]) => void }) {
-  const options: Array<{ value: AppPreferences["workoutFontSize"]; label: string }> = [
-    { value: "compact", label: "Pequena" },
-    { value: "comfortable", label: "Média" },
-    { value: "large", label: "Grande" },
+  const options: Array<{ value: AppPreferences["workoutFontSize"]; label: string; sample: string }> = [
+    { value: "compact", label: "Pequeno", sample: "A" },
+    { value: "comfortable", label: "Padrão", sample: "A" },
+    { value: "large", label: "Grande", sample: "A" },
   ];
-  return <section className="font-size-setting"><div><span aria-hidden="true">Aa</span><div><strong>Tamanho da fonte dos treinos</strong><small>Escolha entre três tamanhos para a sessão.</small></div></div><div className="font-size-options">{options.map((option) => <button key={option.value} aria-pressed={value === option.value} className={value === option.value ? "selected" : ""} onClick={() => onChange(option.value)}>{option.label}</button>)}</div></section>;
+  return (
+    <section className="font-size-setting" aria-labelledby="workout-font-size-title">
+      <div className="font-size-setting-header">
+        <span className="font-size-setting-icon" aria-hidden="true">Aa</span>
+        <div>
+          <strong id="workout-font-size-title">Tamanho do texto</strong>
+          <small>Aplicado em todas as telas do treino</small>
+        </div>
+      </div>
+      <div className="font-size-options" role="group" aria-label="Tamanho do texto do treino">
+        {options.map((option) => {
+          const selected = value === option.value;
+          return (
+            <button key={option.value} type="button" aria-pressed={selected} className={selected ? "selected" : ""} onClick={() => onChange(option.value)}>
+              <span className={`font-size-option-sample sample-${option.value}`} aria-hidden="true">{option.sample}</span>
+              <span>{option.label}</span>
+              <i aria-hidden="true">{selected ? "✓" : ""}</i>
+            </button>
+          );
+        })}
+      </div>
+      <div className={`font-size-preview preview-${value}`} aria-live="polite">
+        <span>PRÉVIA DO TREINO</span>
+        <strong>Agachamento livre</strong>
+        <small>3 séries · 12 repetições</small>
+      </div>
+    </section>
+  );
 }
 
 function ProfileView(props: ProfileViewProps) {
   const { profile, editing, setEditing, theme, changeTheme, exportBackup, preferences, changePreference, installedAppVersion, updateStatus, lastUpdateCheck, updateApplication } = props;
   if (editing) return <ProfileViewBase {...props} />;
   const updateMessage = updateStatus === "checking" ? "Verificando versões e protegendo seus dados…" : updateStatus === "current" ? "Você está usando a versão mais recente." : updateStatus === "available" ? "Nova versão de conteúdo encontrada." : updateStatus === "offline" ? "Sem conexão. Seu treino salvo continua disponível." : updateStatus === "native-required" ? "O contêiner instalado precisa de uma atualização nativa." : updateStatus === "error" ? "A atualização falhou. Seus dados foram preservados." : "Verifique conteúdo e aplicativo sem apagar seus dados.";
-  return <section className="screen"><div className="profile-hero"><Avatar profile={profile} size="large" /><h1>{profile.name}</h1><p>{profile.goal} · {profile.experience}</p><button onClick={() => setEditing(true)}>Editar perfil</button></div><div className="profile-facts"><div><small>Dados corporais</small><strong>{profile.heightCm && profile.weightKg ? `${profile.heightCm} cm · ${formatMetric(profile.weightKg)} kg${profile.waistCm ? ` · cintura ${formatMetric(profile.waistCm)} cm` : ""}` : "Complete seus dados para liberar métricas"}</strong></div><div><small>Rotina</small><strong>{profile.activityLevel || "Não informada"} · {profile.weeklyActivityMinutes || 0} min ativos/semana</strong></div><div><small>Disponibilidade</small><strong>{profile.days.join(" · ")}</strong></div><div><small>Sessão ideal</small><strong>{profile.duration} · {profile.location}</strong></div><div><small>Cuidados</small><strong>{(profile.specialConditions || []).length ? specialConditionOptions.filter((item) => profile.specialConditions?.includes(item.id)).map((item) => item.label).join(" · ") : "Nenhum cuidado especial marcado"}</strong></div><div><small>Observações</small><strong>{profile.limitations || "Nenhuma limitação informada"}</strong></div></div><div className="section-heading"><div><p>AJUSTES</p><h2>Experiência do treino</h2></div></div><div className="settings-list"><button onClick={changeTheme}><span>{theme === "dark" ? "☾" : "☀"}</span><div><strong>Aparência</strong><small>{theme === "dark" ? "Tema escuro" : "Tema claro"}</small></div><b>Alterar</b></button><button onClick={() => changePreference("vibration", !preferences.vibration)}><span>≋</span><div><strong>Vibração</strong><small>Feedback ao concluir séries e descanso</small></div><b>{preferences.vibration ? "Ativa" : "Inativa"}</b></button><button onClick={() => changePreference("sound", !preferences.sound)}><span>♪</span><div><strong>Som do timer</strong><small>Aviso opcional ao terminar o descanso</small></div><b>{preferences.sound ? "Ativo" : "Inativo"}</b></button><button onClick={() => changePreference("keepAwake", !preferences.keepAwake)}><span>◉</span><div><strong>Manter tela ligada</strong><small>Durante uma sessão em andamento</small></div><b>{preferences.keepAwake ? "Ativo" : "Inativo"}</b></button><a className="settings-link" href="/AngelsFit.mobileconfig"><span>⇩</span><div><strong>Usar em tela cheia no iPhone</strong><small>Instale o atalho Angels Fit e veja como remover quando quiser.</small></div><b>Ver</b></a><button onClick={exportBackup}><span>↓</span><div><strong>Exportar backup</strong><small>Perfil, programa, medições, check-ins e histórico</small></div><b>Exportar</b></button></div><section className={`update-card update-${updateStatus}`}><div><p>SOBRE E ATUALIZAÇÃO</p><h2>Angels Fit</h2><span>{updateMessage}</span></div><dl><div><dt>Aplicativo instalado</dt><dd>{installedAppVersion}{isNativeApp() ? " · nativo" : " · web"}</dd></div><div><dt>Conteúdo</dt><dd>{CONTENT_VERSION}</dd></div><div><dt>Schema local</dt><dd>{CURRENT_DATA_SCHEMA_VERSION}</dd></div><div><dt>Compatibilidade mínima</dt><dd>{MINIMUM_SUPPORTED_APP_VERSION}</dd></div><div><dt>Última verificação</dt><dd>{lastUpdateCheck ? new Intl.DateTimeFormat("pt-BR", { dateStyle: "short", timeStyle: "short" }).format(new Date(lastUpdateCheck)) : "Ainda não verificado"}</dd></div></dl><button className="primary-button" disabled={updateStatus === "checking"} onClick={updateApplication}>{updateStatus === "checking" ? "Verificando…" : "Atualizar aplicativo"} <span>↻</span></button>{updateStatus === "native-required" && <button className="native-update-link" onClick={() => { void openExternal("https://github.com/MarioSerafimCoder/BrasaFit/releases"); }}>Abrir atualização nativa</button>}</section><p className="app-version">ANGELS FIT · CONTEÚDO {CONTENT_VERSION}</p></section>;
+  return <section className="screen"><div className="profile-hero"><Avatar profile={profile} size="large" /><h1>{profile.name}</h1><p>{profile.goal} · {profile.experience}</p><button onClick={() => setEditing(true)}>Editar perfil</button></div><div className="profile-facts"><div><small>Dados corporais</small><strong>{profile.heightCm && profile.weightKg ? `${profile.heightCm} cm · ${formatMetric(profile.weightKg)} kg${profile.waistCm ? ` · cintura ${formatMetric(profile.waistCm)} cm` : ""}` : "Complete seus dados para liberar métricas"}</strong></div><div><small>Rotina</small><strong>{profile.activityLevel || "Não informada"} · {profile.weeklyActivityMinutes || 0} min ativos/semana</strong></div><div><small>Disponibilidade</small><strong>{profile.days.join(" · ")}</strong></div><div><small>Sessão ideal</small><strong>{profile.duration} · {profile.location}</strong></div><div><small>Cuidados</small><strong>{(profile.specialConditions || []).length ? specialConditionOptions.filter((item) => profile.specialConditions?.includes(item.id)).map((item) => item.label).join(" · ") : "Nenhum cuidado especial marcado"}</strong></div><div><small>Observações</small><strong>{profile.limitations || "Nenhuma limitação informada"}</strong></div></div><div className="section-heading"><div><p>AJUSTES</p><h2>Experiência do treino</h2></div></div><div className="settings-list"><button onClick={changeTheme}><span>{theme === "dark" ? "☾" : "☀"}</span><div><strong>Aparência</strong><small>{theme === "dark" ? "Tema escuro" : "Tema claro"}</small></div><b>Alterar</b></button><button onClick={() => changePreference("vibration", !preferences.vibration)}><span>≋</span><div><strong>Vibração</strong><small>Feedback ao concluir séries e descanso</small></div><b>{preferences.vibration ? "Ativa" : "Inativa"}</b></button><button onClick={() => changePreference("sound", !preferences.sound)}><span>♪</span><div><strong>Som do timer</strong><small>Aviso opcional ao terminar o descanso</small></div><b>{preferences.sound ? "Ativo" : "Inativo"}</b></button><button onClick={() => changePreference("keepAwake", !preferences.keepAwake)}><span>◉</span><div><strong>Manter tela ligada</strong><small>Durante uma sessão em andamento</small></div><b>{preferences.keepAwake ? "Ativo" : "Inativo"}</b></button><WorkoutFontSizeSetting value={preferences.workoutFontSize} onChange={(value) => changePreference("workoutFontSize", value)} /><a className="settings-link" href="/AngelsFit.mobileconfig"><span>⇩</span><div><strong>Usar em tela cheia no iPhone</strong><small>Instale o atalho Angels Fit e veja como remover quando quiser.</small></div><b>Ver</b></a><button onClick={exportBackup}><span>↓</span><div><strong>Exportar backup</strong><small>Perfil, programa, medições, check-ins e histórico</small></div><b>Exportar</b></button></div><section className={`update-card update-${updateStatus}`}><div><p>SOBRE E ATUALIZAÇÃO</p><h2>Angels Fit</h2><span>{updateMessage}</span></div><dl><div><dt>Aplicativo instalado</dt><dd>{installedAppVersion}{isNativeApp() ? " · nativo" : " · web"}</dd></div><div><dt>Conteúdo</dt><dd>{CONTENT_VERSION}</dd></div><div><dt>Schema local</dt><dd>{CURRENT_DATA_SCHEMA_VERSION}</dd></div><div><dt>Compatibilidade mínima</dt><dd>{MINIMUM_SUPPORTED_APP_VERSION}</dd></div><div><dt>Última verificação</dt><dd>{lastUpdateCheck ? new Intl.DateTimeFormat("pt-BR", { dateStyle: "short", timeStyle: "short" }).format(new Date(lastUpdateCheck)) : "Ainda não verificado"}</dd></div></dl><button className="primary-button" disabled={updateStatus === "checking"} onClick={updateApplication}>{updateStatus === "checking" ? "Verificando…" : "Atualizar aplicativo"} <span>↻</span></button>{updateStatus === "native-required" && <button className="native-update-link" onClick={() => { void openExternal("https://github.com/MarioSerafimCoder/BrasaFit/releases"); }}>Abrir atualização nativa</button>}</section><p className="app-version">ANGELS FIT · CONTEÚDO {CONTENT_VERSION}</p></section>;
 }
 
 function ProfileViewBase({ profile, draft, setDraft, editing, setEditing, cancelEditing, saveProfile, handlePhoto, toggleDay, toggleSpecialCondition, toggleListField, theme, changeTheme, exportBackup }: ProfileViewProps) {
