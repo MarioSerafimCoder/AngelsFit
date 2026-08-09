@@ -643,7 +643,7 @@ export default function FitLocalApp() {
   }
 
   if (activeSession && sessionOpen) {
-    return <div className={`workout-font-${preferences.workoutFontSize}`}><AdaptiveWorkoutSession session={activeSession} preferences={preferences} onExit={() => setSessionOpen(false)} onPersist={persistActiveSession} onFinish={(session) => finishWorkout(session)} /></div>;
+    return <div className={`app-font-${preferences.workoutFontSize} workout-font-${preferences.workoutFontSize}`}><AdaptiveWorkoutSession session={activeSession} preferences={preferences} onExit={() => setSessionOpen(false)} onPersist={persistActiveSession} onFinish={(session) => finishWorkout(session)} /></div>;
   }
 
   const tabContent = {
@@ -664,7 +664,7 @@ export default function FitLocalApp() {
   };
 
   return (
-    <main className="app-shell" onClickCapture={redirectIosProfileInstall}><div className="mobile-app">
+    <main className={`app-shell app-font-${preferences.workoutFontSize}`} onClickCapture={redirectIosProfileInstall}><div className="mobile-app">
       {savedMessage && <div className="toast">✓ {savedMessage}</div>}
       <div className={`app-content ${showBottomNav ? "" : "without-nav"}`}>{previewWorkout ? <WorkoutPreview workout={previewWorkout} onBack={() => setPreviewWorkout(null)} onStart={() => { setPreviewWorkout(null); startWorkout(previewWorkout); }} /> : tabContent}</div>
       {showBottomNav && <nav className="bottom-nav" aria-label="Navegação principal">
@@ -1367,11 +1367,11 @@ function WorkoutFontSizeSetting({ value, onChange }: { value: AppPreferences["wo
       <div className="font-size-setting-header">
         <span className="font-size-setting-icon" aria-hidden="true">Aa</span>
         <div>
-          <strong id="workout-font-size-title">Tamanho do texto</strong>
-          <small>Aplicado em todas as telas do treino</small>
+          <strong id="workout-font-size-title">Tamanho da fonte</strong>
+          <small>Amplia os textos em todo o aplicativo</small>
         </div>
       </div>
-      <div className="font-size-options" role="group" aria-label="Tamanho do texto do treino">
+      <div className="font-size-options" role="group" aria-label="Tamanho da fonte do aplicativo">
         {options.map((option) => {
           const selected = value === option.value;
           return (
@@ -1384,9 +1384,9 @@ function WorkoutFontSizeSetting({ value, onChange }: { value: AppPreferences["wo
         })}
       </div>
       <div className={`font-size-preview preview-${value}`} aria-live="polite">
-        <span>PRÉVIA DO TREINO</span>
-        <strong>Agachamento livre</strong>
-        <small>3 séries · 12 repetições</small>
+        <span>PRÉVIA DO APLICATIVO</span>
+        <strong>Texto mais fácil de enxergar</strong>
+        <small>A escolha também vale para os treinos</small>
       </div>
     </section>
   );
