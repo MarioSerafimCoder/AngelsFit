@@ -15,7 +15,7 @@ O APK existente receberá esta atualização remota sem reinstalação. Ele não
 ## Versões publicadas
 
 - Aplicativo Android compatível: 1.0
-- Conteúdo remoto: 2026.08.09.1
+- Conteúdo remoto: 2026.08.09.2
 - Schema local: 4
 - Cache offline: `angels-fit-shell-v9`
 
