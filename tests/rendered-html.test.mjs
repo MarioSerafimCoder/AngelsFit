@@ -74,8 +74,11 @@ test("includes check-in, sequence calendar and protected interaction flows", asy
   assert.match(periodization, /Retorno progressivo por critérios/);
   assert.match(periodization, /Progressão conquistada/);
   assert.match(css, /\.periodization-card/);
-  assert.match(data, /EXERCISE_DATABASE_VERSION = "4\.1"/);
+  assert.match(data, /EXERCISE_DATABASE_VERSION = "5\.0"/);
   assert.ok((data.match(/id: "/g) || []).length >= 63, "exercise library should contain at least 63 movements");
+  assert.match(app, /GRUPO MUSCULAR/);
+  assert.match(app, /exerciseMuscleGroups/);
+  assert.match(engine, /targetComplexity/);
   assert.match(postpartum, /block: 1, weeks: "10-11"/);
   assert.match(postpartum, /block: 8, weeks: "24-25"/);
   assert.match(engine, /Liberação e sintomas podem ser atualizados a qualquer momento e não bloqueiam/);

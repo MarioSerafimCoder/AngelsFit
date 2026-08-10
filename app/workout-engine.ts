@@ -1,8 +1,8 @@
-import { Exercise, exerciseById, exercises } from "./workout-data";
-import { POSTPARTUM_BLOCKS, PostpartumPrescription } from "./postpartum-program";
-import { recommendedWorkoutIndex, type TrainingHistoryLike } from "./training-intelligence";
-import { defaultRestSeconds } from "./rest-policy";
-import { buildPeriodizationPlan, exerciseProgressionGuidance, upperRepetitionTarget, type PeriodizationPlan } from "./periodization";
+import { EXERCISE_DATABASE_VERSION, exerciseById, exercises, type Exercise } from "./workout-data.ts";
+import { POSTPARTUM_BLOCKS, type PostpartumPrescription } from "./postpartum-program.ts";
+import { recommendedWorkoutIndex, type TrainingHistoryLike } from "./training-intelligence.ts";
+import { defaultRestSeconds } from "./rest-policy.ts";
+import { buildPeriodizationPlan, exerciseProgressionGuidance, upperRepetitionTarget, type PeriodizationPlan } from "./periodization.ts";
 
 export type ProfileForGeneration = {
   goal: string;
@@ -174,18 +174,86 @@ function workoutTemplates(days: number) {
   return [{ name: "A — Empurrar", focus: "push" }, { name: "B — Puxar", focus: "pull" }, { name: "C — Inferiores", focus: "lower" }, { name: "D — Superiores", focus: "upper" }, { name: "E — Corpo inteiro", focus: "full" }];
 }
 
-const focusMovements: Record<string, Exercise["movement"][]> = {
-  full: ["squat", "horizontal_push", "horizontal_pull", "hinge", "glute", "core", "cardio", "arms"],
-  upper: ["horizontal_push", "horizontal_pull", "vertical_pull", "vertical_push", "arms", "core"],
-  lower: ["squat", "hinge", "glute", "squat", "core", "cardio"],
-  push: ["horizontal_push", "vertical_push", "squat", "arms", "core", "cardio"],
-  pull: ["horizontal_pull", "vertical_pull", "hinge", "arms", "core", "cardio"],
+type TrainingSlot = { movements: Exercise["movement"][]; groups?: string[] };
+
+const focusSlots: Record<string, TrainingSlot[]> = {
+  full: [
+    { movements: ["squat"], groups: ["Quadríceps", "Glúteos"] },
+    { movements: ["horizontal_push"], groups: ["Peito"] },
+    { movements: ["horizontal_pull"], groups: ["Costas"] },
+    { movements: ["hinge"], groups: ["Posteriores de coxa", "Corpo inteiro e potência"] },
+    { movements: ["vertical_push", "upper_accessory"], groups: ["Ombros"] },
+    { movements: ["vertical_pull"], groups: ["Costas"] },
+    { movements: ["core"], groups: ["Core"] },
+    { movements: ["lower_accessory", "arms"] },
+  ],
+  upper: [
+    { movements: ["horizontal_push"], groups: ["Peito"] },
+    { movements: ["horizontal_pull"], groups: ["Costas"] },
+    { movements: ["vertical_push"], groups: ["Ombros"] },
+    { movements: ["vertical_pull"], groups: ["Costas"] },
+    { movements: ["upper_accessory"], groups: ["Ombros"] },
+    { movements: ["arms"], groups: ["Bíceps"] },
+    { movements: ["arms"], groups: ["Tríceps"] },
+    { movements: ["core"], groups: ["Core"] },
+  ],
+  lower: [
+    { movements: ["squat"], groups: ["Quadríceps"] },
+    { movements: ["hinge"], groups: ["Posteriores de coxa"] },
+    { movements: ["glute"], groups: ["Glúteos"] },
+    { movements: ["lower_accessory"], groups: ["Adutores e abdutores"] },
+    { movements: ["squat", "glute"], groups: ["Glúteos", "Quadríceps"] },
+    { movements: ["lower_accessory"], groups: ["Panturrilhas e tibial"] },
+    { movements: ["core"], groups: ["Core"] },
+    { movements: ["cardio"] },
+  ],
+  push: [
+    { movements: ["horizontal_push"], groups: ["Peito"] },
+    { movements: ["vertical_push"], groups: ["Ombros"] },
+    { movements: ["upper_accessory"], groups: ["Ombros"] },
+    { movements: ["arms"], groups: ["Tríceps"] },
+    { movements: ["squat"], groups: ["Quadríceps"] },
+    { movements: ["core"], groups: ["Core"] },
+    { movements: ["cardio"] },
+  ],
+  pull: [
+    { movements: ["horizontal_pull"], groups: ["Costas"] },
+    { movements: ["vertical_pull"], groups: ["Costas"] },
+    { movements: ["hinge"], groups: ["Posteriores de coxa", "Corpo inteiro e potência"] },
+    { movements: ["arms"], groups: ["Bíceps", "Antebraços e pegada"] },
+    { movements: ["upper_accessory"], groups: ["Ombros"] },
+    { movements: ["core"], groups: ["Core"] },
+    { movements: ["cardio"] },
+  ],
 };
+
+const experienceRank: Record<string, number> = { Iniciante: 1, Intermediário: 2, Avançado: 3 };
+
+function normalizedText(value: string) {
+  return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("pt-BR");
+}
+
+function matchesSlot(exercise: Exercise, slot: TrainingSlot) {
+  if (!slot.movements.includes(exercise.movement)) return false;
+  if (!slot.groups?.length) return true;
+  const group = normalizedText(exercise.primaryGroup || exercise.muscleGroups[0] || "");
+  return slot.groups.some((candidate) => group === normalizedText(candidate));
+}
+
+function targetComplexity(profile: ProfileForGeneration, periodization: PeriodizationPlan) {
+  const base = profile.experience === "Iniciante" ? 1 : profile.experience === "Intermediário" ? 2 : 3;
+  const phaseBonus = periodization.isDeload || periodization.phase.toLocaleLowerCase("pt-BR").includes("base")
+    ? 0
+    : periodization.phase.toLocaleLowerCase("pt-BR").includes("intens")
+      ? 2
+      : 1;
+  return Math.min(5, base + phaseBonus);
+}
 
 function isAllowed(exercise: Exercise, profile: ProfileForGeneration, avoidCodes: string[], lowImpact: boolean) {
   if (profile.location === "Em casa" && !exercise.locations.includes("Em casa")) return false;
   if (profile.location === "Academia" && !exercise.locations.includes("Academia")) return false;
-  if (profile.experience === "Iniciante" && exercise.level === "Avançado") return false;
+  if ((experienceRank[exercise.level] || 1) > (experienceRank[profile.experience] || 1)) return false;
   if (lowImpact && exercise.impact !== "baixo") return false;
   return !exercise.avoidWhen.some((code) => avoidCodes.includes(code));
 }
@@ -351,7 +419,7 @@ function postpartumProgram(profile: ProfileForGeneration, context: GenerationCon
     severeSymptoms ? "Há sintomas importantes registrados. O treino continua acessível; considere reduzir o esforço e buscar avaliação profissional." : "",
   ].filter(Boolean);
   return {
-    databaseVersion: "4.1", status: "ready", title: `Pós-cesárea · bloco ${block.block}`, summary: `${delivery ? `Semana ${postpartumWeeks}` : "Bloco inicial"} pós-parto · ciclo de 14 dias, no máximo ${block.strengthDays} dias de força por semana.`, split: block.sessions.map((session) => session.name).join(" · "), workouts, safetyCodes: codes,
+    databaseVersion: EXERCISE_DATABASE_VERSION, status: "ready", title: `Pós-cesárea · bloco ${block.block}`, summary: `${delivery ? `Semana ${postpartumWeeks}` : "Bloco inicial"} pós-parto · ciclo de 14 dias, no máximo ${block.strengthDays} dias de força por semana.`, split: block.sessions.map((session) => session.name).join(" · "), workouts, safetyCodes: codes,
     notices: [...informationalNotices, ...notices, "Liberação e sintomas podem ser atualizados a qualquer momento e não bloqueiam o acesso ao treino."], cycleNumber: block.block, validFrom: toDateKey(cycleStart), validUntil: toDateKey(cycleEnd), daysRemaining, todayWorkoutIndex: recommendedWorkoutIndex(context.history || [], workouts.length),
     progressionNote, effectiveExperience: "Iniciante", recoveryClass: "Baixa", effectiveDays: block.totalDays, specialPhase: `${delivery ? `Semana ${postpartumWeeks}` : "Fase inicial"} pós-parto · ${block.rpe}`,
     recommendationReason: "O próximo treino segue a ordem das sessões concluídas, mesmo quando um dia planejado é perdido.",
@@ -389,7 +457,7 @@ export function generateProgram(profile: ProfileForGeneration, context: Generati
   const periodization = buildPeriodizationPlan({ goal: profile.goal, safetyCodes: codes, history: context.history || [], sessionsPerWeek: effectiveDays });
   if (clearanceRequired) {
     return {
-      databaseVersion: "4.0",
+      databaseVersion: EXERCISE_DATABASE_VERSION,
       status: "clearance_required",
       title: "Liberação necessária",
       summary: "O AngelsFit não gera treino automático quando há uma condição que precisa de avaliação individual.",
@@ -417,28 +485,39 @@ export function generateProgram(profile: ProfileForGeneration, context: Generati
   const minutes = Number.parseInt(profile.duration, 10) || 45;
   const mainCount = minutes <= 30 ? 4 : minutes <= 45 ? 6 : minutes <= 60 ? 7 : 8;
   const templates = workoutTemplates(effectiveDays);
-  const movementCycle = Math.max(0, periodization.cycleWeek - 1);
+  const phaseSeed = Math.max(0, periodization.cycleWeek - periodization.phaseWeek);
+  const complexityTarget = targetComplexity(effectiveProfile, periodization);
   const workouts = templates.map((template, templateIndex) => {
     const selected = new Set<string>();
     const main: GeneratedExercise[] = [];
-    const movements = focusMovements[template.focus] || focusMovements.full;
+    const slots = focusSlots[template.focus] || focusSlots.full;
     for (let index = 0; index < mainCount; index += 1) {
-      const movement = movements[index % movements.length];
-      const candidates = allowed.filter((exercise) => exercise.movement === movement && !selected.has(exercise.id));
+      const slot = slots[index % slots.length];
+      const candidates = allowed.filter((exercise) => matchesSlot(exercise, slot) && !selected.has(exercise.id));
       const styleOrder = ["machine", "free", "cable", "conventional"];
-      const preferredStyle = styleOrder[(index + templateIndex + movementCycle) % styleOrder.length];
+      const preferredStyle = styleOrder[(index + templateIndex + phaseSeed) % styleOrder.length];
       const styled = candidates.filter((exercise) => equipmentStyle(exercise) === preferredStyle);
       const pool = styled.length ? styled : candidates;
-      const ranked = [...pool].sort((a, b) => Number(preferredTerms.some((term) => b.name.toLocaleLowerCase("pt-BR").includes(term))) - Number(preferredTerms.some((term) => a.name.toLocaleLowerCase("pt-BR").includes(term))));
-      const exercise = ranked[(movementCycle + templateIndex + index) % Math.max(ranked.length, 1)] || allowed.find((item) => !selected.has(item.id) && !["warmup", "cooldown", "mobility"].includes(item.movement));
+      const ranked = [...pool].sort((a, b) => {
+        const preferredDifference = Number(preferredTerms.some((term) => b.name.toLocaleLowerCase("pt-BR").includes(term))) - Number(preferredTerms.some((term) => a.name.toLocaleLowerCase("pt-BR").includes(term)));
+        if (preferredDifference) return preferredDifference;
+        const sourceDifference = Number(b.source === "Base academia 182") - Number(a.source === "Base academia 182");
+        if (sourceDifference) return sourceDifference;
+        const complexityDifference = Math.abs((a.complexity || 1) - complexityTarget) - Math.abs((b.complexity || 1) - complexityTarget);
+        if (complexityDifference) return complexityDifference;
+        return a.name.localeCompare(b.name, "pt-BR");
+      });
+      const stablePoolSize = Math.min(3, ranked.length);
+      const exercise = ranked[stablePoolSize ? (phaseSeed + templateIndex + index) % stablePoolSize : 0]
+        || allowed.find((item) => !selected.has(item.id) && !["warmup", "cooldown", "mobility"].includes(item.movement));
       if (!exercise) continue;
       selected.add(exercise.id);
       main.push(prescribe(exercise, effectiveProfile, codes, "main", periodization, context.history || []));
     }
     const warmupCandidates = allowed.filter((exercise) => exercise.movement === "warmup" || exercise.movement === "mobility");
     const cooldownCandidates = allowed.filter((exercise) => exercise.movement === "cooldown");
-    const warmup = Array.from({ length: Math.min(2, warmupCandidates.length) }, (_, index) => warmupCandidates[(movementCycle + templateIndex + index) % warmupCandidates.length]).map((exercise) => prescribe(exercise, effectiveProfile, codes, "warmup"));
-    const cooldown = Array.from({ length: Math.min(2, cooldownCandidates.length) }, (_, index) => cooldownCandidates[(movementCycle + templateIndex + index) % cooldownCandidates.length]).map((exercise) => prescribe(exercise, effectiveProfile, codes, "cooldown"));
+    const warmup = Array.from({ length: Math.min(2, warmupCandidates.length) }, (_, index) => warmupCandidates[(phaseSeed + templateIndex + index) % warmupCandidates.length]).map((exercise) => prescribe(exercise, effectiveProfile, codes, "warmup"));
+    const cooldown = Array.from({ length: Math.min(2, cooldownCandidates.length) }, (_, index) => cooldownCandidates[(phaseSeed + templateIndex + index) % cooldownCandidates.length]).map((exercise) => prescribe(exercise, effectiveProfile, codes, "cooldown"));
     return {
       id: `cycle-${periodization.cycleNumber}-week-${periodization.cycleWeek}-${templateIndex + 1}`,
       name: template.name,
@@ -455,7 +534,7 @@ export function generateProgram(profile: ProfileForGeneration, context: Generati
   const progressionNote = periodization.reason;
 
   return {
-    databaseVersion: "4.0",
+    databaseVersion: EXERCISE_DATABASE_VERSION,
     status: "ready",
     title: `${profile.goal} · ${periodization.phase}`,
     summary: `${periodization.model}, semana ${periodization.cycleWeek} de ${periodization.cycleLengthWeeks}. ${effectiveExperience}, ${effectiveDays}x por semana e recuperação ${recoveryClass.toLowerCase()}.`,

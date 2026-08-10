@@ -1,3 +1,5 @@
+import { gymExerciseRows, type GymExerciseRow } from "./exercise-catalog.generated.ts";
+
 export type ExerciseLevel = "Iniciante" | "Intermediário" | "Avançado";
 export type ExerciseLocation = "Academia" | "Em casa";
 export type Impact = "baixo" | "moderado" | "alto";
@@ -8,7 +10,7 @@ export type Exercise = {
   muscleGroups: string[];
   equipment: string;
   locations: ExerciseLocation[];
-  movement: "warmup" | "squat" | "hinge" | "glute" | "horizontal_push" | "vertical_push" | "horizontal_pull" | "vertical_pull" | "arms" | "core" | "cardio" | "mobility" | "cooldown";
+  movement: "warmup" | "squat" | "hinge" | "glute" | "lower_accessory" | "horizontal_push" | "vertical_push" | "horizontal_pull" | "vertical_pull" | "upper_accessory" | "arms" | "core" | "cardio" | "mobility" | "cooldown";
   level: ExerciseLevel;
   impact: Impact;
   tags: string[];
@@ -16,11 +18,22 @@ export type Exercise = {
   instructions: string;
   commonErrors: string;
   alternativeIds: string[];
+  primaryGroup?: string;
+  subgroup?: string;
+  primaryMuscle?: string;
+  secondaryMuscles?: string[];
+  biomechanicalPattern?: string;
+  jointClassification?: string;
+  laterality?: string;
+  complexity?: number;
+  minimumLevel?: string;
+  attention?: string;
+  source?: "AngelsFit" | "Base academia 182";
 };
 
-export const EXERCISE_DATABASE_VERSION = "4.1";
+export const EXERCISE_DATABASE_VERSION = "5.0";
 
-export const exercises: Exercise[] = [
+const supportExercises: Exercise[] = [
   { id: "walk", name: "Caminhada leve", muscleGroups: ["Corpo inteiro"], equipment: "Esteira ou espaço livre", locations: ["Academia", "Em casa"], movement: "warmup", level: "Iniciante", impact: "baixo", tags: ["aquecimento", "baixo-impacto", "cardio"], avoidWhen: [], instructions: "Caminhe em ritmo confortável, respirando sem prender o ar.", commonErrors: "Começar rápido demais ou inclinar o tronco.", alternativeIds: ["bike", "march"] },
   { id: "bike", name: "Bicicleta ergométrica leve", muscleGroups: ["Pernas"], equipment: "Bicicleta ergométrica", locations: ["Academia"], movement: "warmup", level: "Iniciante", impact: "baixo", tags: ["aquecimento", "baixo-impacto", "cardio"], avoidWhen: ["knee_acute"], instructions: "Ajuste o banco para não fechar demais o joelho e pedale leve.", commonErrors: "Banco baixo e resistência excessiva.", alternativeIds: ["walk", "march"] },
   { id: "march", name: "Marcha estacionária", muscleGroups: ["Corpo inteiro"], equipment: "Nenhum", locations: ["Em casa", "Academia"], movement: "warmup", level: "Iniciante", impact: "baixo", tags: ["aquecimento", "baixo-impacto", "pos-parto"], avoidWhen: [], instructions: "Alterne os pés sem impacto, mantendo postura alta.", commonErrors: "Bater os pés ou acelerar além do confortável.", alternativeIds: ["walk"] },
@@ -97,4 +110,121 @@ export const exercises: Exercise[] = [
   { id: "bear_hover_short", name: "Bear hover curto", muscleGroups: ["Core", "Ombros", "Quadríceps"], equipment: "Colchonete", locations: ["Em casa", "Academia"], movement: "core", level: "Intermediário", impact: "baixo", tags: ["core", "isometria", "pos-parto"], avoidWhen: ["wrist_acute", "shoulder_acute", "abdominal_symptoms"], instructions: "Eleve os joelhos poucos centímetros por poucos segundos, expirando e sem abaulamento abdominal.", commonErrors: "Sustentar por tempo excessivo, prender o ar ou perder o controle da parede abdominal.", alternativeIds: ["dead_bug", "bird_dog"] },
 ];
 
-export const exerciseById = new Map(exercises.map((exercise) => [exercise.id, exercise]));
+function normalized(value: string) {
+  return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("pt-BR");
+}
+
+function slug(value: string) {
+  return normalized(value).replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+}
+
+function catalogMovement(row: GymExerciseRow): Exercise["movement"] {
+  const group = normalized(row.group);
+  const subgroup = normalized(row.subgroup);
+  const pattern = normalized(row.pattern);
+  if (/biceps|triceps|antebracos/.test(group)) return "arms";
+  if (/core/.test(group)) return "core";
+  if (/panturrilhas|adutores/.test(group)) return "lower_accessory";
+  if (/ombros/.test(group)) return subgroup.includes("press") ? "vertical_push" : "upper_accessory";
+  if (/peito/.test(group)) return "horizontal_push";
+  if (/costas/.test(group)) return pattern.includes("vertical") || pattern.includes("extensao do ombro") || pattern.includes("elevacao escapular") || pattern.includes("suspensao") ? "vertical_pull" : "horizontal_pull";
+  if (/quadriceps/.test(group)) return "squat";
+  if (/gluteos/.test(group)) return "glute";
+  if (/posteriores/.test(group)) return "hinge";
+  if (/anti-|estabilidade|flexao do tronco|controle pelvico/.test(pattern)) return "core";
+  if (/agachar|membros inferiores|avanco|subida|descida/.test(pattern)) return "squat";
+  if (/hinge|extensao de quadril|extensao tripla/.test(pattern)) return "hinge";
+  if (/puxar horizontal/.test(pattern)) return "horizontal_pull";
+  if (/puxar vertical/.test(pattern)) return "vertical_pull";
+  if (/empurrar vertical|empurrar diagonal/.test(pattern)) return "vertical_push";
+  if (/empurrar|aducao horizontal/.test(pattern)) return "horizontal_push";
+  return "upper_accessory";
+}
+
+function catalogLocations(row: GymExerciseRow): ExerciseLocation[] {
+  const portable = row.category === "Peso corporal"
+    || row.category === "Elástico"
+    || (/halter|kettlebell|miniband|colchonete/i.test(row.equipment) && !/rack|máquina|polia/i.test(row.equipment));
+  return portable ? ["Academia", "Em casa"] : ["Academia"];
+}
+
+function catalogLevel(row: GymExerciseRow): ExerciseLevel {
+  if (row.minimumLevel === "Avançado") return "Avançado";
+  if (row.minimumLevel === "Intermediário") return "Intermediário";
+  return "Iniciante";
+}
+
+function catalogAvoidCodes(row: GymExerciseRow): string[] {
+  const attention = normalized(row.attention);
+  const codes: string[] = [];
+  if (/joelho|patel/.test(attention)) codes.push("knee_acute");
+  if (/lombar|coluna|quadril/.test(attention)) codes.push("back_acute");
+  if (/ombro|escapul/.test(attention)) codes.push("shoulder_acute");
+  if (/cotovelo/.test(attention)) codes.push("elbow_acute");
+  if (/punho|pegada/.test(attention)) codes.push("wrist_acute");
+  if (/tornozelo|panturrilha/.test(attention)) codes.push("ankle_acute");
+  if (/equilibrio/.test(attention)) codes.push("balance_issue");
+  if (row.complexity >= 4 || row.minimumLevel === "Avançado") codes.push("postpartum", "pregnancy");
+  if (row.group === "Core" && row.complexity >= 3) codes.push("abdominal_symptoms");
+  return [...new Set(codes)];
+}
+
+const catalogExercisesWithoutAlternatives: Exercise[] = gymExerciseRows.map((row) => {
+  const movement = catalogMovement(row);
+  const explosive = /potência|explosiv|olímpic/i.test(`${row.group} ${row.subgroup} ${row.pattern}`);
+  return {
+    id: `gym-${row.id}`,
+    name: row.name,
+    muscleGroups: [row.primaryMuscle, ...row.secondaryMuscles],
+    equipment: row.equipment,
+    locations: catalogLocations(row),
+    movement,
+    level: catalogLevel(row),
+    impact: explosive || row.complexity >= 5 ? "alto" : row.complexity >= 4 ? "moderado" : "baixo",
+    tags: [...new Set([
+      slug(row.group),
+      slug(row.subgroup),
+      slug(row.category),
+      slug(row.jointClassification),
+      ...row.goals.map(slug),
+      movement === "core" && row.jointClassification.includes("Isométrico") ? "isometria" : "",
+      row.category === "Máquina" || row.category === "Smith" ? "maquina" : "",
+      row.category === "Cabo" ? "cabo" : "",
+      row.category === "Peso livre" ? "peso-livre" : "",
+    ].filter(Boolean))],
+    avoidWhen: catalogAvoidCodes(row),
+    instructions: row.instructions,
+    commonErrors: "Evite impulso, compensações e perda do alinhamento descrito na execução.",
+    alternativeIds: [],
+    primaryGroup: row.group,
+    subgroup: row.subgroup,
+    primaryMuscle: row.primaryMuscle,
+    secondaryMuscles: row.secondaryMuscles,
+    biomechanicalPattern: row.pattern,
+    jointClassification: row.jointClassification,
+    laterality: row.laterality,
+    complexity: row.complexity,
+    minimumLevel: row.minimumLevel,
+    attention: row.attention,
+    source: "Base academia 182",
+  };
+});
+
+const preferredIdByName = new Map(
+  [...supportExercises, ...catalogExercisesWithoutAlternatives].map((exercise) => [normalized(exercise.name), exercise.id]),
+);
+const catalogExercises = catalogExercisesWithoutAlternatives.map((exercise, index) => ({
+  ...exercise,
+  alternativeIds: gymExerciseRows[index].substitutes
+    .map((name) => preferredIdByName.get(normalized(name)))
+    .filter((id): id is string => Boolean(id)),
+}));
+const allExercises = [...supportExercises, ...catalogExercises];
+const catalogNames = new Set(catalogExercises.map((exercise) => normalized(exercise.name)));
+
+export const exercises = [
+  ...supportExercises.filter((exercise) => !catalogNames.has(normalized(exercise.name))),
+  ...catalogExercises,
+];
+export const exerciseById = new Map(allExercises.map((exercise) => [exercise.id, exercise]));
+export const exerciseMuscleGroups = [...new Set(gymExerciseRows.map((row) => row.group))].sort((left, right) => left.localeCompare(right, "pt-BR"));

@@ -3,7 +3,7 @@
 /* eslint-disable react-hooks/set-state-in-effect */
 
 import { ChangeEvent, FormEvent, MouseEvent, useEffect, useMemo, useRef, useState } from "react";
-import { exercises, EXERCISE_DATABASE_VERSION } from "./workout-data";
+import { exercises, exerciseMuscleGroups, EXERCISE_DATABASE_VERSION } from "./workout-data";
 import { exerciseMedia } from "./exercise-media.generated";
 import { exerciseMediaQueries } from "./exercise-media-queries";
 import { GeneratedProgram, GeneratedWorkout, generateProgram, specialConditionOptions } from "./workout-engine";
@@ -1010,16 +1010,75 @@ function ExerciseDemo({ exerciseId, exerciseName, compact = false }: { exerciseI
 
 function Exercises({ onBack }: { onBack: () => void }) {
   const [search, setSearch] = useState("");
-  const [filter, setFilter] = useState("Todos");
+  const [contextFilter, setContextFilter] = useState("Todos");
+  const [muscleFilter, setMuscleFilter] = useState("Todos os grupos");
   const [openExercise, setOpenExercise] = useState<string | null>(null);
   const normalizedSearch = search.trim().toLocaleLowerCase("pt-BR");
   const filtered = exercises.filter((exercise) => {
-    const matchesSearch = !normalizedSearch || `${exercise.name} ${exercise.muscleGroups.join(" ")} ${exercise.equipment}`.toLocaleLowerCase("pt-BR").includes(normalizedSearch);
-    const matchesFilter = filter === "Todos" || (filter === "Academia" && exercise.locations.includes("Academia")) || (filter === "Casa" && exercise.locations.includes("Em casa")) || (filter === "Mobilidade" && ["mobility", "cooldown"].includes(exercise.movement)) || (filter === "Baixo impacto" && exercise.impact === "baixo");
-    return matchesSearch && matchesFilter;
+    const searchable = `${exercise.name} ${exercise.primaryGroup || ""} ${exercise.subgroup || ""} ${exercise.muscleGroups.join(" ")} ${exercise.biomechanicalPattern || ""} ${exercise.equipment}`.toLocaleLowerCase("pt-BR");
+    const matchesSearch = !normalizedSearch || searchable.includes(normalizedSearch);
+    const matchesContext = contextFilter === "Todos"
+      || (contextFilter === "Academia" && exercise.locations.includes("Academia"))
+      || (contextFilter === "Casa" && exercise.locations.includes("Em casa"))
+      || (contextFilter === "Mobilidade" && ["mobility", "cooldown"].includes(exercise.movement))
+      || (contextFilter === "Baixo impacto" && exercise.impact === "baixo");
+    const matchesMuscle = muscleFilter === "Todos os grupos" || exercise.primaryGroup === muscleFilter;
+    return matchesSearch && matchesContext && matchesMuscle;
   });
-  const filters = ["Todos", "Academia", "Casa", "Mobilidade", "Baixo impacto"];
-  return <section className="screen"><button className="section-back" onClick={onBack}>← Treinos</button><div className="simple-header"><p>BIBLIOTECA</p><h1>{filtered.length} {filtered.length === 1 ? "exercício" : "exercícios"}</h1></div><label className="search-field"><span aria-hidden="true">⌕</span><span className="sr-only">Buscar exercício ou músculo</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar exercício ou músculo" />{search && <button aria-label="Limpar busca" onClick={() => setSearch("")}>×</button>}</label><div className="filter-chips" aria-label="Filtrar exercícios">{filters.map((item) => <button key={item} type="button" aria-pressed={filter === item} className={filter === item ? "active" : ""} onClick={() => setFilter(item)}>{item}</button>)}</div><div className="exercise-list">{filtered.map((exercise) => { const open = openExercise === exercise.id; const detailsId = `exercise-${exercise.id}`; return <article key={exercise.id} className={open ? "open" : ""}><button className="exercise-trigger" aria-expanded={open} aria-controls={detailsId} onClick={() => setOpenExercise(open ? null : exercise.id)}><span aria-hidden="true">{exercise.movement === "warmup" ? "↗" : exercise.movement === "cooldown" ? "↓" : "●"}</span><div><strong>{exercise.name}</strong><small>{exercise.muscleGroups.join(" · ")} · {exercise.equipment}</small></div><b aria-hidden="true">⌄</b></button>{open && <div className="exercise-details" id={detailsId}><ExerciseDemo key={exercise.id} exerciseId={exercise.id} exerciseName={exercise.name} /><p><strong>Execução</strong>{exercise.instructions}</p><p><strong>Erros comuns</strong>{exercise.commonErrors}</p><div>{exercise.tags.slice(0, 4).map((tag) => <span key={tag}>{tag.replace("-", " ")}</span>)}</div></div>}</article>; })}</div>{filtered.length === 0 && <article className="large-empty-state compact-state"><div className="exercise-glyph" aria-hidden="true"><span /></div><h2>Nada encontrado</h2><p>Tente outro nome, grupo muscular ou filtro.</p><button className="reset-filters" onClick={() => { setSearch(""); setFilter("Todos"); }}>Limpar filtros</button></article>}</section>;
+  const contextFilters = ["Todos", "Academia", "Casa", "Mobilidade", "Baixo impacto"];
+  const resetFilters = () => {
+    setSearch("");
+    setContextFilter("Todos");
+    setMuscleFilter("Todos os grupos");
+  };
+
+  return (
+    <section className="screen">
+      <button className="section-back" onClick={onBack}>← Treinos</button>
+      <div className="simple-header"><p>BIBLIOTECA · BASE 5.0</p><h1>{filtered.length} {filtered.length === 1 ? "exercício" : "exercícios"}</h1></div>
+      <label className="search-field">
+        <span aria-hidden="true">⌕</span>
+        <span className="sr-only">Buscar exercício, músculo ou movimento</span>
+        <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar exercício, músculo ou movimento" />
+        {search && <button aria-label="Limpar busca" onClick={() => setSearch("")}>×</button>}
+      </label>
+      <p className="filter-section-label">LOCAL E TIPO</p>
+      <div className="filter-chips" aria-label="Filtrar por local ou tipo">{contextFilters.map((item) => <button key={item} type="button" aria-pressed={contextFilter === item} className={contextFilter === item ? "active" : ""} onClick={() => setContextFilter(item)}>{item}</button>)}</div>
+      <p className="filter-section-label">GRUPO MUSCULAR</p>
+      <div className="filter-chips muscle-filter-chips" aria-label="Filtrar por grupo muscular">{["Todos os grupos", ...exerciseMuscleGroups].map((item) => <button key={item} type="button" aria-pressed={muscleFilter === item} className={muscleFilter === item ? "active" : ""} onClick={() => setMuscleFilter(item)}>{item}</button>)}</div>
+      <div className="exercise-list">
+        {filtered.map((exercise) => {
+          const open = openExercise === exercise.id;
+          const detailsId = `exercise-${exercise.id}`;
+          return (
+            <article key={exercise.id} className={open ? "open" : ""}>
+              <button className="exercise-trigger" aria-expanded={open} aria-controls={detailsId} onClick={() => setOpenExercise(open ? null : exercise.id)}>
+                <span aria-hidden="true">{exercise.movement === "warmup" ? "↗" : exercise.movement === "cooldown" ? "↓" : "●"}</span>
+                <div><strong>{exercise.name}</strong><small>{exercise.primaryGroup || exercise.muscleGroups.join(" · ")} · {exercise.equipment}</small></div>
+                <b aria-hidden="true">⌄</b>
+              </button>
+              {open && (
+                <div className="exercise-details" id={detailsId}>
+                  <ExerciseDemo key={exercise.id} exerciseId={exercise.id} exerciseName={exercise.name} />
+                  <div className="exercise-metadata">
+                    <span>{exercise.level}</span>
+                    {exercise.complexity && <span>Complexidade {exercise.complexity}/5</span>}
+                    {exercise.biomechanicalPattern && <span>{exercise.biomechanicalPattern}</span>}
+                    {exercise.laterality && <span>{exercise.laterality}</span>}
+                  </div>
+                  <p><strong>Execução</strong>{exercise.instructions}</p>
+                  <p><strong>Erros comuns</strong>{exercise.commonErrors}</p>
+                  {exercise.attention && <p className="exercise-attention"><strong>Atenção</strong>{exercise.attention}</p>}
+                  <div>{exercise.tags.slice(0, 4).map((tag) => <span key={tag}>{tag.replaceAll("-", " ")}</span>)}</div>
+                </div>
+              )}
+            </article>
+          );
+        })}
+      </div>
+      {filtered.length === 0 && <article className="large-empty-state compact-state"><div className="exercise-glyph" aria-hidden="true"><span /></div><h2>Nada encontrado</h2><p>Tente outro nome, grupo muscular ou filtro.</p><button className="reset-filters" onClick={resetFilters}>Limpar filtros</button></article>}
+    </section>
+  );
 }
 
 function buildWeeklySessions(history: WorkoutHistory[]) {

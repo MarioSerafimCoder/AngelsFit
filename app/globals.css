@@ -214,6 +214,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .search-field > button { width: 36px; height: 36px; border: 0; border-radius: 50%; background: var(--surface-2); color: var(--muted); font-size: calc(20px + var(--app-font-boost, 0px)); }
 .filter-chips { display: flex; flex-wrap: wrap; overflow: visible; gap: 8px; padding: 12px 0 2px; }
 .filter-chips button { min-height: 44px; }
+.filter-section-label { margin: 18px 0 0; color: var(--muted); font-size: calc(9px + var(--app-font-boost, 0px)); font-weight: 850; letter-spacing: .12em; }
+.muscle-filter-chips { flex-wrap: nowrap; overflow-x: auto; margin-right: -18px; padding-right: 18px; scrollbar-width: none; }
+.muscle-filter-chips::-webkit-scrollbar { display: none; }
 .exercise-list article { border: 1px solid var(--line); border-radius: 18px; background: var(--surface); overflow: hidden; }
 .exercise-trigger { width: 100%; min-height: 66px; display: flex; align-items: center; gap: 12px; padding: 13px; border: 0; background: transparent; text-align: left; }
 .exercise-trigger > span { width: 40px; height: 40px; display: grid; place-items: center; flex: 0 0 auto; border-radius: 12px; background: var(--accent-soft); color: var(--accent); }
@@ -224,6 +227,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .exercise-list article.open .exercise-trigger b { transform: rotate(180deg); }
 .exercise-list article .exercise-details { padding: 0 15px 16px 65px; }
 .exercise-list article .exercise-details p { font-size: calc(12px + var(--app-font-boost, 0px)); }
+.exercise-details .exercise-metadata { display: flex; gap: 6px; flex-wrap: wrap; margin: 2px 0 14px; }
+.exercise-details .exercise-metadata span { padding: 6px 9px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-size: calc(9px + var(--app-font-boost, 0px)); font-weight: 750; }
+.exercise-details .exercise-attention { padding: 12px; border: 1px solid rgba(255,190,92,.3); border-radius: 14px; background: rgba(255,190,92,.08); }
 .exercise-demo { margin: 4px 0 16px; }
 .exercise-demo-frame { position: relative; overflow: hidden; aspect-ratio: 4 / 3; border: 1px solid var(--line); border-radius: 18px; background: #101113; }
 .exercise-demo-frame img,
