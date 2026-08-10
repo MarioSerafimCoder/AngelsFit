@@ -2,7 +2,7 @@ import type { SyncKeyValueStorage } from "./data-repository";
 import { migrateTrainingHistory, type TrainingHistoryLike } from "./training-intelligence.ts";
 
 export const APP_VERSION = "1.0";
-export const CONTENT_VERSION = "2026.08.09.5";
+export const CONTENT_VERSION = "2026.08.09.6";
 export const CURRENT_DATA_SCHEMA_VERSION = 4;
 export const MINIMUM_SUPPORTED_APP_VERSION = "1.0";
 

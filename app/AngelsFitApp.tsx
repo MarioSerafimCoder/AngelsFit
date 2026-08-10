@@ -67,6 +67,7 @@ type WorkoutHistory = TrainingHistoryLike & {
   painScore?: number;
   symptoms?: string[];
   recovery24h?: string;
+  periodizationTrack?: string;
   status?: TrainingSessionStatus;
 };
 
@@ -579,7 +580,8 @@ export default function AngelsFitApp() {
       plannedDate: session.plannedDate,
       sequenceNumber: session.sequenceNumber,
       sequenceAdvance: session.sequenceAdvance,
-      phaseId: `phase-${program?.cycleNumber || 1}`,
+      phaseId: program?.periodization ? `periodization-${program.periodization.track}-cycle-${program.periodization.cycleNumber}-week-${program.periodization.cycleWeek}` : `phase-${program?.cycleNumber || 1}`,
+      periodizationTrack: program?.periodization?.track,
       durationMinutes: Math.max(1, Math.round(metrics.elapsedSeconds / 60)),
       completedExercises: metrics.completedExercises,
       totalExercises: metrics.totalExercises,
@@ -618,7 +620,8 @@ export default function AngelsFitApp() {
       plannedDate,
       sequenceNumber,
       sequenceAdvance: 1,
-      phaseId: `phase-${program?.cycleNumber || 1}`,
+      phaseId: program?.periodization ? `periodization-${program.periodization.track}-cycle-${program.periodization.cycleNumber}-week-${program.periodization.cycleWeek}` : `phase-${program?.cycleNumber || 1}`,
+      periodizationTrack: program?.periodization?.track,
       durationMinutes: 0,
       completedExercises: 0,
       totalExercises: workout.warmup.length + workout.main.length + workout.cooldown.length,
@@ -905,7 +908,7 @@ function Today({ profile, online, installed, setTab, onEditProfile, exportBackup
       <div className="week-strip" aria-label="Calendário de próximos treinos">{calendar.map((day) => <button type="button" key={day.dateKey} aria-pressed={selectedDay?.dateKey === day.dateKey} className={`${day.isToday ? "today" : ""} ${selectedDay?.dateKey === day.dateKey ? "selected" : ""} ${day.workout ? "training-day" : "rest-day"}`} onClick={() => setSelectedDateKey(day.dateKey)}><small>{day.weekdayShort}</small><span>{day.dayNumber}</span><em>{day.monthShort}</em>{day.workout && <i aria-hidden="true" />}</button>)}</div>
       {workout ? <article className="hero-card workout-hero"><div className="hero-orbit" aria-hidden="true"><span>{workout.estimatedMinutes}</span></div><p>{selectedDay?.isToday ? "TREINO DO DIA" : "TREINO PLANEJADO"}</p><h2>{workout.name}</h2><span>{workout.focus} · {workout.main.length + workout.warmup.length + workout.cooldown.length} movimentos · aproximadamente {workout.estimatedMinutes} min</span><small className="cycle-validity">{selectedLabel} · posição {sequenceNumber} da sequência</small><button onClick={() => activeSession ? continueWorkout() : beginSelectedWorkout()}>{activeSession ? "Continuar treino" : selectedDay?.sequenceOffset ? "Avançar e iniciar" : "Iniciar treino"} <b>→</b></button></article> : <article className="hero-card rest-hero"><div className="hero-orbit" aria-hidden="true"><span>☾</span></div><p>RECUPERAÇÃO</p><h2>Dia sem treino planejado</h2><span>{selectedLabel}. Escolha outro dia no calendário para consultar o próximo treino.</span></article>}
       <div className="sequence-nav"><button onClick={repeatPrevious} disabled={!history.length || !program.workouts.length}>↶ Repetir anterior</button><button onClick={() => setSelectedDateKey(calendar[0]?.dateKey)}>Recomendado</button><button onClick={() => { const next = calendar.find((day) => day.sequenceOffset === 1 && day.workout); if (next) setSelectedDateKey(next.dateKey); }}>Próximo →</button></div>
-      <article className="recommendation-card"><p>POR QUE ESTE TREINO?</p><strong>{program.recommendationReason || "A sessão segue sua sequência registrada."}</strong><span>Fase {program.cycleNumber}: {program.phaseCompletedSessions || 0} de {program.phaseRequiredSessions || 12} sessões consolidadas.</span></article>
+      <article className="recommendation-card"><p>POR QUE ESTE TREINO?</p><strong>{program.recommendationReason || "A sessão segue sua sequência registrada."}</strong><span>{program.periodization ? `Ciclo ${program.periodization.cycleNumber} · semana ${program.periodization.cycleWeek} de ${program.periodization.cycleLengthWeeks} · ${program.periodization.phase}` : `Fase ${program.cycleNumber}`}</span></article>
       {returnAdaptation.level !== "none" && adaptationChoice === "pending" && <article className="suggestion-card"><p>AJUSTE DE RETORNO</p><h2>{returnAdaptation.explanation}</h2><div><button onClick={() => setAdaptationChoice("accepted")}>Aceitar ajuste</button><button onClick={onEditProfile}>Editar dados</button><button onClick={() => setAdaptationChoice("ignored")}>Ignorar</button></div></article>}
       {suggestedProtocol && protocolChoice === "pending" && <article className="suggestion-card"><p>TÉCNICA OPCIONAL</p><h2>{suggestedProtocol.name}</h2><span>{suggestedProtocol.explanation}</span><div><button onClick={() => setProtocolChoice("accepted")}>Aceitar</button><button onClick={onEditProfile}>Editar</button><button onClick={() => setProtocolChoice("ignored")}>Ignorar</button></div></article>}
       <div className="section-heading"><div><p>{selectedDay?.isToday ? "HOJE" : "DATA SELECIONADA"}</p><h2>{workout ? "Plano da sessão" : "Recuperação planejada"}</h2></div></div>
@@ -920,14 +923,17 @@ function Today({ profile, online, installed, setTab, onEditProfile, exportBackup
 }
 
 function Program({ profile, program, previewWorkout, openExercises, onEditProfile }: { profile: Profile; program: GeneratedProgram; previewWorkout: (workout: GeneratedWorkout) => void; openExercises: () => void; onEditProfile: () => void }) {
+  const periodization = program.periodization;
+  const cycleProgress = periodization ? Math.max(8, (periodization.cycleWeek / periodization.cycleLengthWeeks) * 100) : Math.max(8, ((14 - program.daysRemaining) / 14) * 100);
   return (
     <section className="screen">
       <ScreenHeader title="Meu programa" kicker="PLANEJAMENTO" profile={profile} onProfileClick={onEditProfile} />
-      <article className="program-overview"><p>PROGRAMA DE {profile.name.toUpperCase()}</p><h2>{program.title}</h2><div><span><strong>{program.effectiveDays}</strong> dias efetivos</span><span><strong>{profile.duration}</strong> por sessão</span></div><div className="program-progress"><span style={{ width: `${Math.max(8, ((14 - program.daysRemaining) / 14) * 100)}%` }} /></div><small>{program.status === "ready" ? `${cycleDateLabel(program.validFrom)} a ${cycleDateLabel(program.validUntil)} · ${program.daysRemaining} dias restantes` : program.split}</small>{program.specialPhase && <em className="program-phase">{program.specialPhase}</em>}</article>
-      <div className="section-heading"><div><p>CICLO DE 2 SEMANAS</p><h2>Treinos deste ciclo</h2></div></div>
+      <article className="program-overview"><p>PROGRAMA DE {profile.name.toUpperCase()}</p><h2>{program.title}</h2><div><span><strong>{program.effectiveDays}</strong> dias efetivos</span><span><strong>{profile.duration}</strong> por sessão</span></div><div className="program-progress"><span style={{ width: `${cycleProgress}%` }} /></div><small>{periodization ? `${periodization.model} · semana ${periodization.cycleWeek} de ${periodization.cycleLengthWeeks}` : program.status === "ready" ? `${cycleDateLabel(program.validFrom)} a ${cycleDateLabel(program.validUntil)}` : program.split}</small>{program.specialPhase && <em className="program-phase">{program.specialPhase}</em>}</article>
+      {periodization && <article className={`periodization-card decision-${periodization.decision}`}><header><div><p>FASE ATUAL</p><h2>{periodization.phase}</h2></div><strong>{periodization.effortTarget}</strong></header><div className="periodization-facts"><span><small>Volume</small><b>{Math.round(periodization.volumeMultiplier * 100)}%</b></span><span><small>Carga-base</small><b>{Math.round(periodization.loadMultiplier * 100)}%</b></span><span><small>Faixa</small><b>{periodization.repetitionTarget}</b></span></div><p>{periodization.reason}</p><small>A semana avança após {periodization.sessionsPerWeek} sessões qualificadas. Técnica, conclusão, esforço, dor, sintomas e recuperação são considerados.</small></article>}
+      <div className="section-heading"><div><p>{periodization ? `CICLO ${periodization.cycleNumber} · ${periodization.cycleLengthWeeks} SEMANAS` : "PROGRAMA ATUAL"}</p><h2>Treinos desta fase</h2></div></div>
       {program.workouts.length > 0 ? <div className="program-list">{program.workouts.map((workout, index) => <button key={workout.id} aria-label={`Ver treino ${workout.name}`} onClick={() => previewWorkout(workout)}><span>{String(index + 1).padStart(2, "0")}</span><div><strong>{workout.name}</strong><small>{workout.warmup.length + workout.main.length + workout.cooldown.length} movimentos · {workout.estimatedMinutes} min · 3 blocos</small></div><b>Ver</b></button>)}</div> : <article className="safety-block">{program.notices.map((notice) => <p key={notice}>! {notice}</p>)}</article>}
       <button className="library-entry" onClick={openExercises}><span aria-hidden="true">◎</span><div><strong>Biblioteca de exercícios</strong><small>Consulte execução, músculos e alternativas.</small></div><b>Ver →</b></button>
-      <article className="upgrade-card"><span>↻</span><div><strong>Próxima revisão em {program.daysRemaining} {program.daysRemaining === 1 ? "dia" : "dias"}</strong><p>{program.progressionNote}</p></div></article>
+      <article className="upgrade-card"><span>↻</span><div><strong>{periodization ? `${periodization.sessionsToNextWeek} ${periodization.sessionsToNextWeek === 1 ? "sessão qualificada" : "sessões qualificadas"} para a próxima semana` : `Próxima revisão em ${program.daysRemaining} dias`}</strong><p>{program.progressionNote}</p></div></article>
       {program.specialPhase && <details className="methodology-card"><summary>Critérios do programa pós-parto</summary><p>O programa avança por blocos de duas semanas. Liberação, cicatrização e sintomas podem ser registrados, mas permanecem informativos e não bloqueiam o acesso aos treinos.</p><div><a href="https://bjsm.bmj.com/content/59/8/515" target="_blank" rel="noreferrer">Diretriz canadense 2025</a><a href="https://www.acog.org/clinical/clinical-guidance/committee-opinion/articles/2020/04/physical-activity-and-exercise-during-pregnancy-and-the-postpartum-period" target="_blank" rel="noreferrer">ACOG · exercício pós-parto</a></div></details>}
     </section>
   );

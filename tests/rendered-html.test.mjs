@@ -29,10 +29,11 @@ test("server-renders the AngelsFit application shell", async () => {
 });
 
 test("includes check-in, sequence calendar and protected interaction flows", async () => {
-  const [app, css, engine, data, postpartum, media, mediaQueries] = await Promise.all([
+  const [app, css, engine, periodization, data, postpartum, media, mediaQueries] = await Promise.all([
     readFile(new URL("../app/AngelsFitApp.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
     readFile(new URL("../app/workout-engine.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/periodization.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/workout-data.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/postpartum-program.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/exercise-media.generated.ts", import.meta.url), "utf8"),
@@ -67,7 +68,12 @@ test("includes check-in, sequence calendar and protected interaction flows", asy
   assert.doesNotMatch(postpartumEngine, /clearance_required|workouts:\s*\[\]/);
   assert.match(postpartumEngine, /status: "ready"/);
   assert.match(engine, /recommendedWorkoutIndex/);
-  assert.match(engine, /evaluatePhase/);
+  assert.match(engine, /buildPeriodizationPlan/);
+  assert.match(periodization, /Mesociclo de hipertrofia/);
+  assert.match(periodization, /Ciclo de condicionamento/);
+  assert.match(periodization, /Retorno progressivo por critérios/);
+  assert.match(periodization, /Progressão conquistada/);
+  assert.match(css, /\.periodization-card/);
   assert.match(data, /EXERCISE_DATABASE_VERSION = "4\.1"/);
   assert.ok((data.match(/id: "/g) || []).length >= 63, "exercise library should contain at least 63 movements");
   assert.match(postpartum, /block: 1, weeks: "10-11"/);

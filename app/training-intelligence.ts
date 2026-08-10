@@ -26,6 +26,7 @@ export type TrainingHistoryLike = {
   sequenceNumber?: number;
   sequenceAdvance?: number;
   phaseId?: string;
+  periodizationTrack?: string;
   durationMinutes?: number;
   completedExercises?: number;
   totalExercises?: number;
