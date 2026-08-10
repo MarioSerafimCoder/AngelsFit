@@ -278,7 +278,8 @@ function prescribe(exercise: Exercise, profile: ProfileForGeneration, codes: str
   }
   const periodizedSets = periodization ? Math.max(1, Math.round(base.sets * periodization.volumeMultiplier)) : base.sets;
   const clinicalSetCap = periodization?.track === "clinical" ? (periodization.cycleWeek <= 2 ? 2 : periodization.cycleWeek <= 6 ? 3 : 4) : periodization?.track === "pregnancy" ? 3 : 2;
-  const prescribedSets = conservative ? Math.min(periodizedSets, clinicalSetCap) : Math.min(5, periodizedSets);
+  const experienceSetCap = profile.experience === "Iniciante" ? 3 : 5;
+  const prescribedSets = Math.min(periodizedSets, experienceSetCap, conservative ? clinicalSetCap : 5);
   const periodizedReps = periodization?.track === "conditioning" ? base.reps : periodization?.repetitionTarget || base.reps;
   const progression = periodization
     ? exerciseProgressionGuidance({ history, exerciseId: exercise.id, upperRepetitionTarget: upperRepetitionTarget(periodizedReps), periodization })

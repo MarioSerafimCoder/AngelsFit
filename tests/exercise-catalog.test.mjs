@@ -57,3 +57,21 @@ test("keeps the same movements during a phase so load and repetition progression
     weekTwo.workouts[0].main.map((item) => item.exercise.name),
   );
 });
+
+test("caps beginners at three sets even during intensification", () => {
+  const qualifiedHistory = Array.from({ length: 8 }, (_, index) => ({
+    id: `session-${index + 1}`,
+    completedAt: new Date(Date.UTC(2026, 7, index + 1, 12)).toISOString(),
+    status: "completed",
+    periodizationTrack: "hypertrophy",
+    completedExercises: 6,
+    totalExercises: 6,
+    sessionRpe: 7,
+    painScore: 0,
+    recovery24h: "Bem recuperada",
+    exerciseRecords: [],
+  }));
+  const program = generateProgram(baseProfile, { now: new Date("2026-08-10T12:00:00.000Z"), history: qualifiedHistory });
+  assert.match(program.periodization?.phase || "", /Intensificação/);
+  assert.ok(program.workouts.flatMap((workout) => workout.main).every((item) => item.sets <= 3));
+});
