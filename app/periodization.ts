@@ -227,10 +227,19 @@ export function buildPeriodizationPlan(options: { goal: string; safetyCodes: str
 }
 
 export function exerciseProgressionGuidance(options: { history: PeriodizationHistory[]; exerciseId: string; upperRepetitionTarget: number; periodization: PeriodizationPlan }) {
-  if (options.periodization.isDeload) return `Use cerca de ${Math.round(options.periodization.loadMultiplier * 100)}% da carga habitual e preserve a técnica.`;
-  if (options.periodization.decision === "regress") return `Reduza carga, amplitude ou volume e reavalie a resposta até o dia seguinte.`;
-  if (options.periodization.loadMultiplier < 1) return `Use até ${Math.round(options.periodization.loadMultiplier * 100)}% da carga habitual e progrida somente com resposta estável até o dia seguinte.`;
   const records = options.history.flatMap((item) => item.exerciseRecords || []).filter((item) => item.exerciseId === options.exerciseId).slice(0, 3);
+  const latest = records[0];
+  const formatLoad = (value: number) => `${Math.round(value * 10) / 10}`.replace(".", ",");
+  const reducedLoad = latest?.load ? Math.max(0.5, Math.round(latest.load * options.periodization.loadMultiplier * 2) / 2) : 0;
+  if (options.periodization.isDeload) return reducedLoad > 0
+    ? `Semana de recuperação: use cerca de ${formatLoad(reducedLoad)} kg e preserve a técnica.`
+    : `Use cerca de ${Math.round(options.periodization.loadMultiplier * 100)}% da carga habitual e preserve a técnica.`;
+  if (options.periodization.decision === "regress") return latest?.load
+    ? `Reduza para aproximadamente ${formatLoad(Math.max(0.5, Math.round(latest.load * 0.9 * 2) / 2))} kg e reavalie a resposta até o dia seguinte.`
+    : `Reduza carga, amplitude ou volume e reavalie a resposta até o dia seguinte.`;
+  if (options.periodization.loadMultiplier < 1) return reducedLoad > 0
+    ? `Use até ${formatLoad(reducedLoad)} kg e progrida somente com resposta estável até o dia seguinte.`
+    : `Use até ${Math.round(options.periodization.loadMultiplier * 100)}% da carga habitual e progrida somente com resposta estável até o dia seguinte.`;
   const lastTwo = records.slice(0, 2);
   const sameLoad = lastTwo.length === 2 && lastTwo[0].load > 0 && lastTwo[0].load === lastTwo[1].load;
   const earned = sameLoad && lastTwo.every((item) => item.setsCompleted >= item.setsPlanned
@@ -238,8 +247,17 @@ export function exerciseProgressionGuidance(options: { history: PeriodizationHis
     && item.rirOrRpe >= 1
     && item.executionFeedback === "adequate"
     && !item.painReported);
-  if (earned) return "Progressão conquistada: aumente a menor carga disponível e retorne à base da faixa de repetições.";
-  if (records[0]?.painReported || records[0]?.executionFeedback === "limited") return "Mantenha ou reduza a carga até recuperar técnica estável e ausência de piora dos sintomas.";
+  if (earned) {
+    const increment = latest.load < 20 ? 1 : latest.load < 60 ? 2 : 5;
+    return `Progressão conquistada: tente ${formatLoad(latest.load + increment)} kg e retorne à base da faixa de repetições.`;
+  }
+  if (latest?.painReported || latest?.executionFeedback === "limited") return latest?.load
+    ? `Recupere a técnica antes de progredir; se necessário, use cerca de ${formatLoad(Math.max(0.5, Math.round(latest.load * 0.9 * 2) / 2))} kg.`
+    : "Mantenha ou reduza a carga até recuperar técnica estável e ausência de piora dos sintomas.";
+  if (latest?.load > 0) {
+    const nextRepetitions = Math.min(options.upperRepetitionTarget, Math.max(1, latest.repetitions + 1));
+    return `Mantenha ${formatLoad(latest.load)} kg e busque ${nextRepetitions} repetições por série com o RIR-alvo.`;
+  }
   return "Mantenha a carga e acumule repetições até alcançar o topo da faixa com o RIR-alvo em duas sessões.";
 }
 

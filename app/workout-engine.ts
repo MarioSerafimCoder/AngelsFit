@@ -3,6 +3,7 @@ import { POSTPARTUM_BLOCKS, type PostpartumPrescription } from "./postpartum-pro
 import { recommendedWorkoutIndex, type TrainingHistoryLike } from "./training-intelligence.ts";
 import { defaultRestSeconds } from "./rest-policy.ts";
 import { buildPeriodizationPlan, exerciseProgressionGuidance, upperRepetitionTarget, type PeriodizationPlan } from "./periodization.ts";
+import { fitWorkoutToTime } from "./workout-planning.ts";
 
 export type ProfileForGeneration = {
   goal: string;
@@ -50,6 +51,7 @@ export type GeneratedWorkout = {
   name: string;
   focus: string;
   estimatedMinutes: number;
+  targetMinutes?: number;
   warmup: GeneratedExercise[];
   main: GeneratedExercise[];
   cooldown: GeneratedExercise[];
@@ -484,7 +486,7 @@ export function generateProgram(profile: ProfileForGeneration, context: Generati
   const preferredTerms = (profile.preferredExercises || "").toLocaleLowerCase("pt-BR").split(/[,;\n]/).map((item) => item.trim()).filter(Boolean);
   const allowed = exercises.filter((exercise) => isAllowed(exercise, effectiveProfile, avoidCodes, lowImpact) && matchesAvailableEquipment(exercise, profile.availableEquipment) && !rejectedTerms.some((term) => exercise.name.toLocaleLowerCase("pt-BR").includes(term)));
   const minutes = Number.parseInt(profile.duration, 10) || 45;
-  const mainCount = minutes <= 30 ? 4 : minutes <= 45 ? 6 : minutes <= 60 ? 7 : 8;
+  const mainCount = 8;
   const templates = workoutTemplates(effectiveDays);
   const phaseSeed = Math.max(0, periodization.cycleWeek - periodization.phaseWeek);
   const complexityTarget = targetComplexity(effectiveProfile, periodization);
@@ -517,16 +519,25 @@ export function generateProgram(profile: ProfileForGeneration, context: Generati
     }
     const warmupCandidates = allowed.filter((exercise) => exercise.movement === "warmup" || exercise.movement === "mobility");
     const cooldownCandidates = allowed.filter((exercise) => exercise.movement === "cooldown");
-    const warmup = Array.from({ length: Math.min(2, warmupCandidates.length) }, (_, index) => warmupCandidates[(phaseSeed + templateIndex + index) % warmupCandidates.length]).map((exercise) => prescribe(exercise, effectiveProfile, codes, "warmup"));
-    const cooldown = Array.from({ length: Math.min(2, cooldownCandidates.length) }, (_, index) => cooldownCandidates[(phaseSeed + templateIndex + index) % cooldownCandidates.length]).map((exercise) => prescribe(exercise, effectiveProfile, codes, "cooldown"));
+    const supportExerciseCount = minutes <= 30 ? 1 : 2;
+    const warmup = Array.from({ length: Math.min(supportExerciseCount, warmupCandidates.length) }, (_, index) => warmupCandidates[(phaseSeed + templateIndex + index) % warmupCandidates.length]).map((exercise) => prescribe(exercise, effectiveProfile, codes, "warmup"));
+    const cooldown = Array.from({ length: Math.min(supportExerciseCount, cooldownCandidates.length) }, (_, index) => cooldownCandidates[(phaseSeed + templateIndex + index) % cooldownCandidates.length]).map((exercise) => prescribe(exercise, effectiveProfile, codes, "cooldown"));
+    const fitted = fitWorkoutToTime({
+      targetMinutes: minutes,
+      warmup: warmup.length ? warmup : [prescribe(exercises[0], effectiveProfile, codes, "warmup")],
+      main,
+      cooldown: cooldown.length ? cooldown : [prescribe(exercises.find((exercise) => exercise.id === "breathing_reset")!, effectiveProfile, codes, "cooldown")],
+      minimumMainExercises: minutes <= 30 ? 3 : 4,
+    });
     return {
       id: `cycle-${periodization.cycleNumber}-week-${periodization.cycleWeek}-${templateIndex + 1}`,
       name: template.name,
       focus: profile.goal,
-      estimatedMinutes: minutes,
-      warmup: warmup.length ? warmup : [prescribe(exercises[0], effectiveProfile, codes, "warmup")],
-      main,
-      cooldown: cooldown.length ? cooldown : [prescribe(exercises.find((exercise) => exercise.id === "breathing_reset")!, effectiveProfile, codes, "cooldown")],
+      estimatedMinutes: fitted.estimatedMinutes,
+      targetMinutes: minutes,
+      warmup: fitted.warmup,
+      main: fitted.main,
+      cooldown: fitted.cooldown,
       notices,
     };
   });

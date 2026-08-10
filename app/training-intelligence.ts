@@ -4,6 +4,9 @@ export type TrainingSessionStatus = "planned" | "in_progress" | "completed" | "p
 
 export type ExercisePerformanceRecord = {
   exerciseId: string;
+  plannedExerciseId?: string;
+  primaryMuscleGroup?: string;
+  muscleGroups?: string[];
   setsPlanned: number;
   setsCompleted: number;
   repetitions: number;
@@ -68,6 +71,14 @@ export type AdherenceSummary = {
   trainingVolume: number;
 };
 
+export type WeeklyMuscleVolume = {
+  muscleGroup: string;
+  completedSets: number;
+  plannedSets: number;
+  percentage: number;
+  status: "building" | "target" | "above";
+};
+
 export type PhaseDecision = {
   phaseNumber: number;
   completedInPhase: number;
@@ -117,19 +128,43 @@ function startOfDay(date: Date): Date {
   return new Date(date.getFullYear(), date.getMonth(), date.getDate(), 12);
 }
 
-function effectiveStatus(item: TrainingHistoryLike): TrainingSessionStatus {
-  return item.status || "completed";
+export function normalizedTrainingStatus(item: TrainingHistoryLike): TrainingSessionStatus {
+  const storedStatus = item.status || "completed";
+  if (storedStatus !== "completed") return storedStatus;
+  if (!item.totalExercises) return storedStatus;
+  const completion = (item.completedExercises || 0) / item.totalExercises;
+  if (completion <= 0) return "interrupted";
+  if (completion < 0.7) return "partial";
+  return "completed";
+}
+
+export function trainingStatusLabel(item: TrainingHistoryLike): string {
+  if (item.wasSkipped || normalizedTrainingStatus(item) === "skipped") return "Treino pulado";
+  if (item.wasRepeated || normalizedTrainingStatus(item) === "repeated") return "Treino repetido";
+  if (item.wasManuallyAdvanced || normalizedTrainingStatus(item) === "manually_advanced") return "Sequência avançada";
+  const status = normalizedTrainingStatus(item);
+  if (status === "partial") return "Treino parcial";
+  if (status === "interrupted") return "Treino interrompido";
+  if (status === "in_progress") return "Treino em andamento";
+  if (status === "planned") return "Treino planejado";
+  return "Treino concluído";
+}
+
+export function isAttendedTrainingSession(item: TrainingHistoryLike): boolean {
+  return ["completed", "partial", "interrupted", "repeated"].includes(normalizedTrainingStatus(item)) && (item.completedExercises || 0) > 0;
 }
 
 export function sequenceAdvanceFor(item: TrainingHistoryLike): number {
+  const status = normalizedTrainingStatus(item);
+  if (["partial", "interrupted", "in_progress", "planned", "repeated"].includes(status)) return 0;
   if (typeof item.sequenceAdvance === "number") return Math.max(0, item.sequenceAdvance);
-  return ADVANCING_STATUSES.has(effectiveStatus(item)) ? 1 : 0;
+  return ADVANCING_STATUSES.has(status) ? 1 : 0;
 }
 
 export function migrateTrainingHistory(history: TrainingHistoryLike[]): TrainingHistoryLike[] {
   let cursor = 0;
   const migrated = [...history].sort((left, right) => new Date(left.completedAt).getTime() - new Date(right.completedAt).getTime()).map((item) => {
-    const status = effectiveStatus(item);
+    const status = normalizedTrainingStatus(item);
     const advance = sequenceAdvanceFor({ ...item, status });
     const migratedItem = {
       ...item,
@@ -202,9 +237,9 @@ function plannedSessionsThrough(date: Date, availableDays: string[]): number {
 export function calculateAdherence(history: TrainingHistoryLike[], now: Date, availableDays: string[]): AdherenceSummary {
   const monthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
   const monthItems = history.filter((item) => toLocalDateKey(new Date(item.completedAt)).startsWith(monthKey));
-  const completed = monthItems.filter((item) => effectiveStatus(item) === "completed");
-  const partial = monthItems.filter((item) => effectiveStatus(item) === "partial");
-  const skipped = monthItems.filter((item) => ["skipped", "manually_advanced"].includes(effectiveStatus(item)));
+  const completed = monthItems.filter((item) => normalizedTrainingStatus(item) === "completed");
+  const partial = monthItems.filter((item) => ["partial", "interrupted", "repeated"].includes(normalizedTrainingStatus(item)) && !item.wasSkipped);
+  const skipped = monthItems.filter((item) => ["skipped", "manually_advanced"].includes(normalizedTrainingStatus(item)) || item.wasSkipped);
   const plannedSessions = Math.max(plannedSessionsThrough(startOfDay(now), availableDays), completed.length + partial.length + skipped.length);
   const attended = [...completed, ...partial].sort((left, right) => new Date(left.completedAt).getTime() - new Date(right.completedAt).getTime());
   let longestInactivityPeriod = 0;
@@ -227,8 +262,41 @@ export function calculateAdherence(history: TrainingHistoryLike[], now: Date, av
   };
 }
 
+export function buildWeeklyMuscleVolume(history: TrainingHistoryLike[], workouts: GeneratedWorkout[], now = new Date()): WeeklyMuscleVolume[] {
+  const planned = new Map<string, number>();
+  for (const workout of workouts) {
+    for (const item of workout.main) {
+      const group = item.exercise.primaryGroup || item.exercise.muscleGroups[0];
+      if (!group) continue;
+      planned.set(group, (planned.get(group) || 0) + item.sets);
+    }
+  }
+
+  const actual = new Map<string, number>();
+  const weekStart = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 6).getTime();
+  for (const session of history) {
+    if (!isAttendedTrainingSession(session) || new Date(session.completedAt).getTime() < weekStart) continue;
+    for (const record of session.exerciseRecords || []) {
+      const group = record.primaryMuscleGroup || record.muscleGroups?.[0];
+      if (!group) continue;
+      actual.set(group, (actual.get(group) || 0) + Math.max(0, record.setsCompleted));
+    }
+  }
+
+  return [...new Set([...planned.keys(), ...actual.keys()])]
+    .map((muscleGroup) => {
+      const plannedSets = planned.get(muscleGroup) || 0;
+      const completedSets = actual.get(muscleGroup) || 0;
+      const percentage = plannedSets ? Math.round((completedSets / plannedSets) * 100) : completedSets ? 100 : 0;
+      const status = plannedSets > 0 && completedSets > plannedSets * 1.25 ? "above" : plannedSets > 0 && completedSets >= plannedSets ? "target" : "building";
+      return { muscleGroup, completedSets, plannedSets, percentage, status } satisfies WeeklyMuscleVolume;
+    })
+    .filter((item) => item.plannedSets > 0 || item.completedSets > 0)
+    .sort((left, right) => right.plannedSets - left.plannedSets || left.muscleGroup.localeCompare(right.muscleGroup, "pt-BR"));
+}
+
 export function evaluatePhase(history: TrainingHistoryLike[], adherence: AdherenceSummary, requiredSessions = 12): PhaseDecision {
-  const completed = history.filter((item) => effectiveStatus(item) === "completed");
+  const completed = history.filter((item) => normalizedTrainingStatus(item) === "completed");
   const phaseNumber = Math.floor(completed.length / requiredSessions) + 1;
   const completedInPhase = completed.length % requiredSessions;
   const window = completed.slice(0, requiredSessions);
@@ -241,7 +309,7 @@ export function evaluatePhase(history: TrainingHistoryLike[], adherence: Adheren
 }
 
 export function getReturnAdaptation(history: TrainingHistoryLike[], now: Date): ReturnAdaptation {
-  const last = history.find((item) => ["completed", "partial"].includes(effectiveStatus(item)));
+  const last = history.find((item) => isAttendedTrainingSession(item));
   const inactivityDays = last ? daysBetween(new Date(last.completedAt), now) : 0;
   if (inactivityDays > 14) return { inactivityDays, level: "return", setMultiplier: 0.5, loadMultiplier: 0.7, allowAdvancedProtocols: false, explanation: `Como você ficou ${inactivityDays} dias sem treinar, esta será uma sessão de retorno com reavaliação, menos séries e esforço controlado.` };
   if (inactivityDays >= 8) return { inactivityDays, level: "reduce", setMultiplier: 0.7, loadMultiplier: 0.8, allowAdvancedProtocols: false, explanation: `Reduzimos volume e intensidade porque já se passaram ${inactivityDays} dias desde a última sessão.` };

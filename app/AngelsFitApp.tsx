@@ -3,17 +3,18 @@
 /* eslint-disable react-hooks/set-state-in-effect */
 
 import { ChangeEvent, FormEvent, MouseEvent, useEffect, useMemo, useRef, useState } from "react";
-import { exercises, exerciseMuscleGroups, EXERCISE_DATABASE_VERSION } from "./workout-data";
+import { exercises, exerciseById, exerciseMuscleGroups, EXERCISE_DATABASE_VERSION } from "./workout-data";
 import { exerciseMedia } from "./exercise-media.generated";
 import { exerciseMediaQueries } from "./exercise-media-queries";
-import { GeneratedProgram, GeneratedWorkout, generateProgram, specialConditionOptions } from "./workout-engine";
+import { GeneratedProgram, GeneratedWorkout, detectSafetyCodes, generateProgram, specialConditionOptions } from "./workout-engine";
 import { BodyMeasurement, bmiCategory, calculateAge, calculateBmi, epleyEstimatedOneRepMax, estimateRestingEnergy, formatMetric, linearProjection, waistRatioCategory, waistToHeightRatio } from "./performance-metrics";
 import { getBrowserDataRepository } from "./data-repository";
 import { ActiveWorkoutSession, addRestSeconds, beginActiveSession, effectiveSets, enterFeedback, getElapsedSeconds, getRestRemainingSeconds, normalizeActiveWorkoutSession, patchActiveSession, pauseRest, resumeRest, sessionReadiness, skipRest, startRest, createActiveWorkoutSession, summarizeActiveSession } from "./active-session";
 import { APP_VERSION, CONTENT_VERSION, CURRENT_DATA_SCHEMA_VERSION, LAST_UPDATE_CHECK_KEY, MINIMUM_SUPPORTED_APP_VERSION, compareVersions, runDataMigrations, validateVersionMetadata } from "./versioning";
 import { configureNativeChrome, getInstalledAppVersion, hapticImpact, isNativeApp, openExternal, registerNativeBackButton } from "./native-platform";
-import { applyReturnAdaptation, buildCalendarSchedule, calculateAdherence, completedSequenceCount, eligibleProtocols, getReturnAdaptation, migrateTrainingHistory, recommendedWorkoutIndex, toLocalDateKey, type ExercisePerformanceRecord, type TrainingHistoryLike, type TrainingSessionStatus } from "./training-intelligence";
+import { applyReturnAdaptation, buildCalendarSchedule, buildWeeklyMuscleVolume, calculateAdherence, completedSequenceCount, eligibleProtocols, getReturnAdaptation, isAttendedTrainingSession, migrateTrainingHistory, normalizedTrainingStatus, recommendedWorkoutIndex, trainingStatusLabel, toLocalDateKey, type ExercisePerformanceRecord, type TrainingHistoryLike, type TrainingSessionStatus } from "./training-intelligence";
 import { BACKUP_FORMAT_VERSION, BackupValidationError, MAX_BACKUP_FILE_SIZE, parseBackupJson, type ParsedBackup } from "./backup";
+import { rankExerciseSubstitutions } from "./exercise-substitution";
 
 type AppTab = "today" | "program" | "exercises" | "progress" | "profile";
 
@@ -165,7 +166,7 @@ function localDateKey(value = new Date()) {
 function attendanceStreak(checkIns: CheckIn[], history: WorkoutHistory[]) {
   const attended = new Set([
     ...checkIns.map((item) => localDateKey(new Date(item.checkedAt))),
-    ...history.map((item) => localDateKey(new Date(item.completedAt))),
+    ...history.filter((item) => isAttendedTrainingSession(item)).map((item) => localDateKey(new Date(item.completedAt))),
   ]);
   const cursor = new Date();
   if (!attended.has(localDateKey(cursor))) cursor.setDate(cursor.getDate() - 1);
@@ -575,8 +576,12 @@ export default function AngelsFitApp() {
       const completedSets = (session.completedSeries[item.exercise.id] || []).length;
       const plannedSets = session.setOverrides[item.exercise.id] ?? item.sets;
       const substitution = session.substitutions.find((entry) => entry.fromExerciseId === item.exercise.id);
+      const performedExercise = substitution ? exerciseById.get(substitution.toExerciseId) || item.exercise : item.exercise;
       return {
-        exerciseId: item.exercise.id,
+        exerciseId: performedExercise.id,
+        plannedExerciseId: item.exercise.id,
+        primaryMuscleGroup: performedExercise.primaryGroup || performedExercise.muscleGroups[0],
+        muscleGroups: performedExercise.muscleGroups,
         setsPlanned: plannedSets,
         setsCompleted: completedSets,
         repetitions: Number.parseInt(session.actualReps[item.exercise.id] || "0", 10) || 0,
@@ -589,7 +594,14 @@ export default function AngelsFitApp() {
         substitutedExerciseId: substitution?.toExerciseId,
       };
     });
-    const finalStatus: TrainingSessionStatus = session.sequenceAction === "repeated" ? "repeated" : session.sequenceAction === "manually_advanced" ? "manually_advanced" : status;
+    const completionRatio = metrics.totalExercises ? metrics.completedExercises / metrics.totalExercises : 0;
+    const finalStatus: TrainingSessionStatus = status !== "completed"
+      ? status
+      : completionRatio >= 0.7
+        ? "completed"
+        : metrics.completedExercises > 0
+          ? "partial"
+          : "interrupted";
     const record: WorkoutHistory = {
       id: session.id,
       workoutId: workout.id,
@@ -597,7 +609,7 @@ export default function AngelsFitApp() {
       completedAt: new Date().toISOString(),
       plannedDate: session.plannedDate,
       sequenceNumber: session.sequenceNumber,
-      sequenceAdvance: session.sequenceAdvance,
+      sequenceAdvance: finalStatus === "completed" ? session.sequenceAdvance : 0,
       phaseId: program?.periodization ? `periodization-${program.periodization.track}-cycle-${program.periodization.cycleNumber}-week-${program.periodization.cycleWeek}` : `phase-${program?.cycleNumber || 1}`,
       periodizationTrack: program?.periodization?.track,
       durationMinutes: Math.max(1, Math.round(metrics.elapsedSeconds / 60)),
@@ -613,19 +625,19 @@ export default function AngelsFitApp() {
       symptoms: metrics.symptoms,
       status: finalStatus,
       exerciseRecords,
-      wasRepeated: finalStatus === "repeated",
-      wasManuallyAdvanced: finalStatus === "manually_advanced",
+      wasRepeated: session.sequenceAction === "repeated",
+      wasManuallyAdvanced: session.sequenceAction === "manually_advanced",
     };
     const nextHistory = [record, ...history];
     setHistory(nextHistory);
     void getBrowserDataRepository().write("history", nextHistory);
-    if (status === "completed") registerCheckIn();
+    if (metrics.completedExercises > 0) registerCheckIn();
     setActiveSession(null);
     setSessionOpen(false);
     setEndSessionPrompt(false);
     void getBrowserDataRepository().remove("activeSession");
     setTab("progress");
-    setSavedMessage(status === "completed" ? "Treino registrado" : "Sessão parcial salva");
+    setSavedMessage(finalStatus === "completed" ? "Treino registrado" : finalStatus === "partial" ? "Sessão parcial salva" : "Sessão interrompida salva");
     window.setTimeout(() => setSavedMessage(""), 2600);
   }
 
@@ -787,14 +799,14 @@ export default function AngelsFitApp() {
   }
 
   if (activeSession && sessionOpen) {
-    return <div className={`app-font-${preferences.workoutFontSize} workout-font-${preferences.workoutFontSize}`}><AdaptiveWorkoutSession session={activeSession} previousWorkout={history.find((item) => ["completed", "partial", "interrupted"].includes(item.status || "completed"))} preferences={preferences} onExit={() => setSessionOpen(false)} onPersist={persistActiveSession} onFinish={(session) => finishWorkout(session)} /></div>;
+    return <div className={`app-font-${preferences.workoutFontSize} workout-font-${preferences.workoutFontSize}`}><AdaptiveWorkoutSession session={activeSession} profile={profile} previousWorkout={history.find((item) => isAttendedTrainingSession(item))} preferences={preferences} onExit={() => setSessionOpen(false)} onPersist={persistActiveSession} onFinish={(session) => finishWorkout(session)} /></div>;
   }
 
   const tabContent = {
     today: <Today profile={profile} online={online} installed={installed} setTab={setTab} onEditProfile={openProfileEditor} exportBackup={exportBackup} program={program!} startWorkout={startWorkout} skipWorkout={skipWorkout} activeSession={activeSession} continueWorkout={() => setSessionOpen(true)} endWorkout={() => setEndSessionPrompt(true)} checkIns={checkIns} history={history} onCheckIn={registerCheckIn} onRecovery24h={registerRecovery24h} />,
     program: <Program profile={profile} program={program!} previewWorkout={setPreviewWorkout} openExercises={() => setTab("exercises")} onEditProfile={openProfileEditor} />,
     exercises: <Exercises onBack={() => setTab("program")} />,
-    progress: <Progress profile={profile} history={history} checkIns={checkIns} measurements={measurements} setTab={setTab} />,
+    progress: <Progress profile={profile} program={program!} history={history} checkIns={checkIns} measurements={measurements} setTab={setTab} />,
     profile: <div className="profile-tab"><ProfileView profile={profile} draft={draft} setDraft={setDraft} editing={editingProfile} setEditing={setEditingProfile} cancelEditing={cancelProfileEdit} saveProfile={saveProfile} handlePhoto={handlePhoto} toggleDay={toggleDay} toggleSpecialCondition={toggleSpecialCondition} toggleListField={toggleListField} theme={theme} changeTheme={changeTheme} exportBackup={exportBackup} preferences={preferences} changePreference={changePreference} installedAppVersion={installedAppVersion} updateStatus={updateStatus} lastUpdateCheck={lastUpdateCheck} updateApplication={updateApplication} />{!editingProfile && <section className="backup-management-card"><span aria-hidden="true">↥</span><div><p>RESTAURAÇÃO SEGURA</p><h2>Recuperar um backup</h2><small>Revise o conteúdo do arquivo antes de substituir os dados deste aparelho.</small><button type="button" onClick={openBackupPicker}>Selecionar backup</button></div></section>}</div>,
   }[tab];
 
@@ -924,7 +936,7 @@ function Today({ profile, online, installed, setTab, onEditProfile, exportBackup
       {pendingRecovery && <article className="recovery-followup"><p>RESPOSTA DE 24 HORAS</p><h2>Como você ficou após {pendingRecovery.workoutName}?</h2><div>{["Melhor", "Igual", "Piorou", "Muito cansada"].map((response) => <button key={response} onClick={() => onRecovery24h(pendingRecovery.id, response)}>{response}</button>)}</div></article>}
       {!metricsComplete && <button className="profile-completion-card" onClick={() => setTab("profile")}><span>!</span><div><strong>Complete seus dados de desempenho</strong><small>Informe nascimento, altura, peso e rotina para liberar métricas e previsões.</small></div><b>→</b></button>}
       <div className="week-strip" aria-label="Calendário de próximos treinos">{calendar.map((day) => <button type="button" key={day.dateKey} aria-pressed={selectedDay?.dateKey === day.dateKey} className={`${day.isToday ? "today" : ""} ${selectedDay?.dateKey === day.dateKey ? "selected" : ""} ${day.workout ? "training-day" : "rest-day"}`} onClick={() => setSelectedDateKey(day.dateKey)}><small>{day.weekdayShort}</small><span>{day.dayNumber}</span><em>{day.monthShort}</em>{day.workout && <i aria-hidden="true" />}</button>)}</div>
-      {workout ? <article className="hero-card workout-hero"><div className="hero-orbit" aria-hidden="true"><span>{workout.estimatedMinutes}</span></div><p>{selectedDay?.isToday ? "TREINO DO DIA" : "TREINO PLANEJADO"}</p><h2>{workout.name}</h2><span>{workout.focus} · {workout.main.length + workout.warmup.length + workout.cooldown.length} movimentos · aproximadamente {workout.estimatedMinutes} min</span><small className="cycle-validity">{selectedLabel} · posição {sequenceNumber} da sequência</small><button onClick={() => activeSession ? continueWorkout() : beginSelectedWorkout()}>{activeSession ? "Continuar treino" : selectedDay?.sequenceOffset ? "Avançar e iniciar" : "Iniciar treino"} <b>→</b></button></article> : <article className="hero-card rest-hero"><div className="hero-orbit" aria-hidden="true"><span>☾</span></div><p>RECUPERAÇÃO</p><h2>Dia sem treino planejado</h2><span>{selectedLabel}. Escolha outro dia no calendário para consultar o próximo treino.</span></article>}
+      {workout ? <article className="hero-card workout-hero"><div className="hero-orbit" aria-hidden="true"><span>{workout.estimatedMinutes}</span></div><p>{selectedDay?.isToday ? "TREINO DO DIA" : "TREINO PLANEJADO"}</p><h2>{workout.name}</h2><span>{workout.focus} · {workout.main.length + workout.warmup.length + workout.cooldown.length} movimentos · estimativa real de {workout.estimatedMinutes} min dentro da sua janela de {workout.targetMinutes || workout.estimatedMinutes} min</span><small className="cycle-validity">{selectedLabel} · posição {sequenceNumber} da sequência</small><button onClick={() => activeSession ? continueWorkout() : beginSelectedWorkout()}>{activeSession ? "Continuar treino" : selectedDay?.sequenceOffset ? "Avançar e iniciar" : "Iniciar treino"} <b>→</b></button></article> : <article className="hero-card rest-hero"><div className="hero-orbit" aria-hidden="true"><span>☾</span></div><p>RECUPERAÇÃO</p><h2>Dia sem treino planejado</h2><span>{selectedLabel}. Escolha outro dia no calendário para consultar o próximo treino.</span></article>}
       <div className="sequence-nav"><button onClick={repeatPrevious} disabled={!history.length || !program.workouts.length}>↶ Repetir anterior</button><button onClick={() => setSelectedDateKey(calendar[0]?.dateKey)}>Recomendado</button><button onClick={() => { const next = calendar.find((day) => day.sequenceOffset === 1 && day.workout); if (next) setSelectedDateKey(next.dateKey); }}>Próximo →</button></div>
       <article className="recommendation-card"><p>POR QUE ESTE TREINO?</p><strong>{program.recommendationReason || "A sessão segue sua sequência registrada."}</strong><span>{program.periodization ? `Ciclo ${program.periodization.cycleNumber} · semana ${program.periodization.cycleWeek} de ${program.periodization.cycleLengthWeeks} · ${program.periodization.phase}` : `Fase ${program.cycleNumber}`}</span></article>
       {returnAdaptation.level !== "none" && adaptationChoice === "pending" && <article className="suggestion-card"><p>AJUSTE DE RETORNO</p><h2>{returnAdaptation.explanation}</h2><div><button onClick={() => setAdaptationChoice("accepted")}>Aceitar ajuste</button><button onClick={onEditProfile}>Editar dados</button><button onClick={() => setAdaptationChoice("ignored")}>Ignorar</button></div></article>}
@@ -949,7 +961,7 @@ function Program({ profile, program, previewWorkout, openExercises, onEditProfil
       <article className="program-overview"><p>PROGRAMA DE {profile.name.toUpperCase()}</p><h2>{program.title}</h2><div><span><strong>{program.effectiveDays}</strong> dias efetivos</span><span><strong>{profile.duration}</strong> por sessão</span></div><div className="program-progress"><span style={{ width: `${cycleProgress}%` }} /></div><small>{periodization ? `${periodization.model} · semana ${periodization.cycleWeek} de ${periodization.cycleLengthWeeks}` : program.status === "ready" ? `${cycleDateLabel(program.validFrom)} a ${cycleDateLabel(program.validUntil)}` : program.split}</small>{program.specialPhase && <em className="program-phase">{program.specialPhase}</em>}</article>
       {periodization && <article className={`periodization-card decision-${periodization.decision}`}><header><div><p>FASE ATUAL</p><h2>{periodization.phase}</h2></div><strong>{periodization.effortTarget}</strong></header><div className="periodization-facts"><span><small>Volume</small><b>{Math.round(periodization.volumeMultiplier * 100)}%</b></span><span><small>Carga-base</small><b>{Math.round(periodization.loadMultiplier * 100)}%</b></span><span><small>Faixa</small><b>{periodization.repetitionTarget}</b></span></div><p>{periodization.reason}</p><small>A semana avança após {periodization.sessionsPerWeek} sessões qualificadas. Técnica, conclusão, esforço, dor, sintomas e recuperação são considerados.</small></article>}
       <div className="section-heading"><div><p>{periodization ? `CICLO ${periodization.cycleNumber} · ${periodization.cycleLengthWeeks} SEMANAS` : "PROGRAMA ATUAL"}</p><h2>Treinos desta fase</h2></div></div>
-      {program.workouts.length > 0 ? <div className="program-list">{program.workouts.map((workout, index) => <button key={workout.id} aria-label={`Ver treino ${workout.name}`} onClick={() => previewWorkout(workout)}><span>{String(index + 1).padStart(2, "0")}</span><div><strong>{workout.name}</strong><small>{workout.warmup.length + workout.main.length + workout.cooldown.length} movimentos · {workout.estimatedMinutes} min · 3 blocos</small></div><b>Ver</b></button>)}</div> : <article className="safety-block">{program.notices.map((notice) => <p key={notice}>! {notice}</p>)}</article>}
+      {program.workouts.length > 0 ? <div className="program-list">{program.workouts.map((workout, index) => <button key={workout.id} aria-label={`Ver treino ${workout.name}`} onClick={() => previewWorkout(workout)}><span>{String(index + 1).padStart(2, "0")}</span><div><strong>{workout.name}</strong><small>{workout.warmup.length + workout.main.length + workout.cooldown.length} movimentos · estimativa {workout.estimatedMinutes} min · 3 blocos</small></div><b>Ver</b></button>)}</div> : <article className="safety-block">{program.notices.map((notice) => <p key={notice}>! {notice}</p>)}</article>}
       <button className="library-entry" onClick={openExercises}><span aria-hidden="true">◎</span><div><strong>Biblioteca de exercícios</strong><small>Consulte execução, músculos e alternativas.</small></div><b>Ver →</b></button>
       <article className="upgrade-card"><span>↻</span><div><strong>{periodization ? `${periodization.sessionsToNextWeek} ${periodization.sessionsToNextWeek === 1 ? "sessão qualificada" : "sessões qualificadas"} para a próxima semana` : `Próxima revisão em ${program.daysRemaining} dias`}</strong><p>{program.progressionNote}</p></div></article>
       {program.specialPhase && <details className="methodology-card"><summary>Critérios do programa pós-parto</summary><p>O programa avança por blocos de duas semanas. Liberação, cicatrização e sintomas podem ser registrados, mas permanecem informativos e não bloqueiam o acesso aos treinos.</p><div><a href="https://bjsm.bmj.com/content/59/8/515" target="_blank" rel="noreferrer">Diretriz canadense 2025</a><a href="https://www.acog.org/clinical/clinical-guidance/committee-opinion/articles/2020/04/physical-activity-and-exercise-during-pregnancy-and-the-postpartum-period" target="_blank" rel="noreferrer">ACOG · exercício pós-parto</a></div></details>}
@@ -1086,6 +1098,7 @@ function buildWeeklySessions(history: WorkoutHistory[]) {
   return Array.from({ length: 6 }, (_, displayIndex) => {
     const bucket = 5 - displayIndex;
     const count = history.filter((item) => {
+      if (!isAttendedTrainingSession(item)) return false;
       const ageDays = (now - new Date(item.completedAt).getTime()) / 86_400_000;
       return ageDays >= bucket * 7 && ageDays < (bucket + 1) * 7;
     }).length;
@@ -1099,31 +1112,48 @@ function MetricBars({ items, suffix = "", relative = false }: { items: Array<{ l
   return <div className="metric-bars">{items.map((item, index) => { const height = relative ? 24 + ((item.value - min) / Math.max(max - min, 1)) * 76 : Math.max(item.value > 0 ? 12 : 2, (item.value / max) * 100); return <div key={`${item.label}-${index}`}><span className="bar-track"><i style={{ height: `${height}%` }} /></span><strong>{item.value ? `${formatMetric(item.value, item.value % 1 ? 1 : 0)}${suffix}` : "0"}</strong><small>{item.label}</small></div>; })}</div>;
 }
 
-function Progress({ profile, history, checkIns, measurements, setTab }: { profile: Profile; history: WorkoutHistory[]; checkIns: CheckIn[]; measurements: BodyMeasurement[]; setTab: (tab: AppTab) => void }) {
+function Progress({ profile, program, history, checkIns, measurements, setTab }: { profile: Profile; program: GeneratedProgram; history: WorkoutHistory[]; checkIns: CheckIn[]; measurements: BodyMeasurement[]; setTab: (tab: AppTab) => void }) {
   const [now] = useState(() => Date.now());
   const age = calculateAge(profile.birthDate);
   const bmi = calculateBmi(profile.weightKg, profile.heightCm);
   const waistRatio = waistToHeightRatio(profile.waistCm, profile.heightCm);
   const restingEnergy = estimateRestingEnergy(profile.weightKg, profile.heightCm, age, profile.biologicalSex);
-  const recentWorkouts = history.filter((item) => now - new Date(item.completedAt).getTime() <= 28 * 86_400_000);
+  const recentWorkouts = history.filter((item) => isAttendedTrainingSession(item) && now - new Date(item.completedAt).getTime() <= 28 * 86_400_000);
   const recentCheckIns = checkIns.filter((item) => now - new Date(item.checkedAt).getTime() <= 28 * 86_400_000);
   const attendanceDays = new Set([...recentWorkouts.map((item) => localDateKey(new Date(item.completedAt))), ...recentCheckIns.map((item) => localDateKey(new Date(item.checkedAt)))]).size;
   const monthlyAdherence = calculateAdherence(history, new Date(now), profile.days);
   const adherence = monthlyAdherence.adherencePercentage;
   const plannedWeekly = Math.max(profile.days.length, 1);
   const streak = attendanceStreak(checkIns, history);
-  const minutes = history.reduce((total, item) => total + item.durationMinutes, 0);
+  const attendedHistory = history.filter((item) => isAttendedTrainingSession(item));
+  const completedHistory = history.filter((item) => normalizedTrainingStatus(item) === "completed");
+  const partialHistory = history.filter((item) => ["partial", "interrupted"].includes(normalizedTrainingStatus(item)));
+  const minutes = attendedHistory.reduce((total, item) => total + item.durationMinutes, 0);
   const weekly = buildWeeklySessions(history);
+  const weeklyMuscleVolume = buildWeeklyMuscleVolume(history, program.workouts, new Date(now));
   const weightItems = [...measurements].slice(0, 6).reverse().map((item) => ({ label: new Intl.DateTimeFormat("pt-BR", { day: "2-digit", month: "2-digit" }).format(new Date(item.recordedAt)), value: item.weightKg }));
-  const volumeItems = [...history].filter((item) => (item.totalVolumeKg || 0) > 0).slice(0, 6).reverse().map((item, index) => ({ label: `T${index + 1}`, value: Math.round(item.totalVolumeKg || 0) }));
+  const volumeItems = [...attendedHistory].filter((item) => (item.totalVolumeKg || 0) > 0).slice(0, 6).reverse().map((item, index) => ({ label: `T${index + 1}`, value: Math.round(item.totalVolumeKg || 0) }));
   const complete = Boolean(profile.birthDate && profile.heightCm && profile.weightKg && profile.activityLevel);
   const hasActivity = history.length > 0 || checkIns.length > 0;
   const activities = [
-    ...history.map((item) => ({ id: `workout-${item.id}`, type: "Treino concluído", title: item.workoutName, date: item.completedAt, meta: `${item.completedExercises}/${item.totalExercises} movimentos · ${item.durationMinutes} min${item.sessionRpe ? ` · RPE ${item.sessionRpe}` : ""}${item.cardioMinutes ? ` · cardio ${item.cardioMinutes} min ${item.cardioIntensity?.toLowerCase()}` : ""}${item.symptoms?.length ? " · sintomas registrados" : ""}` })),
+    ...history.map((item) => ({ id: `workout-${item.id}`, type: trainingStatusLabel(item), title: item.workoutName, date: item.completedAt, meta: `${item.completedExercises}/${item.totalExercises} movimentos · ${item.durationMinutes} min${item.sessionRpe ? ` · RPE ${item.sessionRpe}` : ""}${item.cardioMinutes ? ` · cardio ${item.cardioMinutes} min ${item.cardioIntensity?.toLowerCase()}` : ""}${item.symptoms?.length ? " · sintomas registrados" : ""}` })),
     ...checkIns.map((item) => ({ id: `checkin-${item.id}`, type: "Check-in", title: "Presença registrada", date: item.checkedAt, meta: "Sua consistência conta" })),
   ].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()).slice(0, 12);
 
-  return <section className="screen performance-screen"><div className="simple-header"><p>CONSISTÊNCIA + EVOLUÇÃO</p><h1>Progresso</h1></div>{!hasActivity && <article className="progress-welcome"><span aria-hidden="true">↗</span><div><strong>Seu progresso começa hoje.</strong><p>Faça um check-in ou conclua o primeiro treino para começar a acompanhar sua consistência.</p><button onClick={() => setTab("today")}>Ir para Hoje →</button></div></article>}<div className="progress-summary"><article><strong>{checkIns.length}</strong><span>check-ins</span></article><article><strong>{history.length}</strong><span>treinos</span></article><article><strong>{streak}</strong><span>{streak === 1 ? "dia seguido" : "dias seguidos"}</span></article></div>{!complete && <button className="profile-completion-card" onClick={() => setTab("profile")}><span>!</span><div><strong>Complete seus dados</strong><small>Informe os dados do perfil para liberar todas as métricas.</small></div><b>→</b></button>}{hasActivity && <article className="adherence-card"><div><p>ASSIDUIDADE · 28 DIAS</p><strong>{adherence}%</strong><span>{attendanceDays} {attendanceDays === 1 ? "dia com presença" : "dias com presença"} · meta de {plannedWeekly}x/semana</span></div><div className="adherence-ring" style={{ background: `conic-gradient(var(--accent) ${adherence * 3.6}deg, var(--surface-3) 0deg)` }}><span>{attendanceDays}</span><small>presenças</small></div></article>}<div className="performance-section"><div className="section-heading"><div><p>FREQUÊNCIA</p><h2>Treinos nas últimas 6 semanas</h2></div></div>{history.length ? <article className="chart-card"><MetricBars items={weekly} /></article> : <article className="data-empty"><strong>O gráfico será ativado no primeiro treino</strong><p>Se preferir, use o check-in para registrar que você compareceu hoje.</p></article>}</div><div className="section-heading"><div><p>INDICADORES PESSOAIS</p><h2>Dados de referência</h2></div></div><div className="performance-kpis"><article><p>IMC</p><strong>{bmi !== null ? formatMetric(bmi) : "—"}</strong><span>{bmiCategory(bmi, age)}</span></article><article><p>Cintura/altura</p><strong>{waistRatio !== null ? formatMetric(waistRatio, 2) : "—"}</strong><span>{waistRatioCategory(waistRatio)}</span></article><article><p>Atividade semanal</p><strong>{profile.weeklyActivityMinutes || 0}</strong><span>minutos informados</span></article><article><p>Gasto em repouso</p><strong>{restingEnergy ? `${restingEnergy}` : "—"}</strong><span>{restingEnergy ? "kcal/dia estimadas" : "sexo biológico opcional"}</span></article></div><div className="performance-section"><div className="section-heading"><div><p>CARGA DE TREINO</p><h2>Volume registrado</h2></div></div>{volumeItems.length ? <article className="chart-card"><MetricBars items={volumeItems} suffix=" kg" /></article> : <article className="data-empty"><strong>Registre carga e repetições</strong><p>O volume aparecerá depois dos primeiros treinos registrados.</p></article>}</div><div className="performance-section"><div className="section-heading"><div><p>COMPOSIÇÃO CORPORAL</p><h2>Tendência de peso</h2></div></div>{weightItems.length > 1 ? <article className="chart-card"><MetricBars items={weightItems} suffix=" kg" relative /></article> : <article className="data-empty"><strong>Mais uma medição libera a tendência</strong><p>Atualize seu peso em outra data para comparar a evolução.</p></article>}</div><div className="section-heading"><div><p>ATIVIDADE</p><h2>Histórico recente</h2></div><span className="version-badge">{minutes} min</span></div>{activities.length ? <div className="activity-list">{activities.map((item) => <article key={item.id}><span aria-hidden="true">{item.type === "Check-in" ? "✓" : "↗"}</span><div><small>{item.type}</small><strong>{item.title}</strong><p>{new Intl.DateTimeFormat("pt-BR", { dateStyle: "medium", timeStyle: "short" }).format(new Date(item.date))} · {item.meta}</p></div></article>)}</div> : <article className="data-empty"><strong>Nenhuma atividade registrada</strong><p>Seu primeiro check-in aparecerá aqui.</p></article>}<details className="methodology-card"><summary>Sobre estas métricas</summary><p>As métricas ajudam no acompanhamento pessoal e usam os dados informados no perfil e nos treinos. Não substituem avaliação clínica, diagnóstico ou orientação nutricional.</p></details></section>;
+  return <section className="screen performance-screen">
+    <div className="simple-header"><p>CONSISTÊNCIA + EVOLUÇÃO</p><h1>Progresso</h1></div>
+    {!hasActivity && <article className="progress-welcome"><span aria-hidden="true">↗</span><div><strong>Seu progresso começa hoje.</strong><p>Faça um check-in ou conclua o primeiro treino para começar a acompanhar sua consistência.</p><button onClick={() => setTab("today")}>Ir para Hoje →</button></div></article>}
+    <div className="progress-summary"><article><strong>{completedHistory.length}</strong><span>concluídos</span></article><article><strong>{partialHistory.length}</strong><span>parciais</span></article><article><strong>{streak}</strong><span>{streak === 1 ? "dia seguido" : "dias seguidos"}</span></article></div>
+    {!complete && <button className="profile-completion-card" onClick={() => setTab("profile")}><span>!</span><div><strong>Complete seus dados</strong><small>Informe os dados do perfil para liberar todas as métricas.</small></div><b>→</b></button>}
+    {hasActivity && <article className="adherence-card"><div><p>ASSIDUIDADE · 28 DIAS</p><strong>{adherence}%</strong><span>{attendanceDays} {attendanceDays === 1 ? "dia com presença" : "dias com presença"} · meta de {plannedWeekly}x/semana</span></div><div className="adherence-ring" style={{ background: `conic-gradient(var(--accent) ${adherence * 3.6}deg, var(--surface-3) 0deg)` }}><span>{attendanceDays}</span><small>presenças</small></div></article>}
+    <div className="performance-section"><div className="section-heading"><div><p>FREQUÊNCIA</p><h2>Treinos nas últimas 6 semanas</h2></div></div>{attendedHistory.length ? <article className="chart-card"><MetricBars items={weekly} /></article> : <article className="data-empty"><strong>O gráfico será ativado no primeiro treino realizado</strong><p>Treinos pulados e sessões sem séries concluídas não entram nesta conta.</p></article>}</div>
+    <div className="performance-section"><div className="section-heading"><div><p>VOLUME SEMANAL</p><h2>Grupos musculares</h2></div><span className="version-badge">últimos 7 dias</span></div>{weeklyMuscleVolume.length ? <div className="muscle-volume-list">{weeklyMuscleVolume.map((item) => <article key={item.muscleGroup} className={`volume-${item.status}`}><div><strong>{item.muscleGroup}</strong><small>{item.completedSets} de {item.plannedSets} séries planejadas</small></div><span><i style={{ width: `${Math.min(100, item.percentage)}%` }} /></span><b>{item.status === "above" ? "acima do plano" : item.status === "target" ? "meta atingida" : `${item.percentage}%`}</b></article>)}</div> : <article className="data-empty"><strong>O controle começa no próximo treino</strong><p>As séries realizadas serão agrupadas por músculo e comparadas ao plano da semana.</p></article>}</div>
+    <div className="section-heading"><div><p>INDICADORES PESSOAIS</p><h2>Dados de referência</h2></div></div><div className="performance-kpis"><article><p>IMC</p><strong>{bmi !== null ? formatMetric(bmi) : "—"}</strong><span>{bmiCategory(bmi, age)}</span></article><article><p>Cintura/altura</p><strong>{waistRatio !== null ? formatMetric(waistRatio, 2) : "—"}</strong><span>{waistRatioCategory(waistRatio)}</span></article><article><p>Atividade semanal</p><strong>{profile.weeklyActivityMinutes || 0}</strong><span>minutos informados</span></article><article><p>Gasto em repouso</p><strong>{restingEnergy ? `${restingEnergy}` : "—"}</strong><span>{restingEnergy ? "kcal/dia estimadas" : "sexo biológico opcional"}</span></article></div>
+    <div className="performance-section"><div className="section-heading"><div><p>CARGA DE TREINO</p><h2>Volume registrado</h2></div></div>{volumeItems.length ? <article className="chart-card"><MetricBars items={volumeItems} suffix=" kg" /></article> : <article className="data-empty"><strong>Registre carga e repetições</strong><p>O volume aparecerá depois dos primeiros treinos registrados.</p></article>}</div>
+    <div className="performance-section"><div className="section-heading"><div><p>COMPOSIÇÃO CORPORAL</p><h2>Tendência de peso</h2></div></div>{weightItems.length > 1 ? <article className="chart-card"><MetricBars items={weightItems} suffix=" kg" relative /></article> : <article className="data-empty"><strong>Mais uma medição libera a tendência</strong><p>Atualize seu peso em outra data para comparar a evolução.</p></article>}</div>
+    <div className="section-heading"><div><p>ATIVIDADE</p><h2>Histórico recente</h2></div><span className="version-badge">{minutes} min</span></div>{activities.length ? <div className="activity-list">{activities.map((item) => <article key={item.id}><span aria-hidden="true">{item.type === "Check-in" ? "✓" : "↗"}</span><div><small>{item.type}</small><strong>{item.title}</strong><p>{new Intl.DateTimeFormat("pt-BR", { dateStyle: "medium", timeStyle: "short" }).format(new Date(item.date))} · {item.meta}</p></div></article>)}</div> : <article className="data-empty"><strong>Nenhuma atividade registrada</strong><p>Seu primeiro check-in aparecerá aqui.</p></article>}
+    <details className="methodology-card"><summary>Sobre estas métricas</summary><p>Sessões só aparecem como concluídas quando pelo menos 70% dos movimentos foram realizados. O volume muscular compara as séries feitas nos últimos sete dias com o programa atual.</p><p>As métricas ajudam no acompanhamento pessoal e não substituem avaliação clínica, diagnóstico ou orientação nutricional.</p></details>
+  </section>;
 }
 
 function PerformanceLegacy({ profile, history, checkIns, measurements, setTab }: { profile: Profile; history: WorkoutHistory[]; checkIns: CheckIn[]; measurements: BodyMeasurement[]; setTab: (tab: AppTab) => void }) {
@@ -1180,7 +1210,7 @@ function playTimerSound() {
   }
 }
 
-function AdaptiveWorkoutSession({ session, previousWorkout, preferences, onExit, onPersist, onFinish }: { session: ActiveWorkoutSession; previousWorkout?: WorkoutHistory; preferences: AppPreferences; onExit: () => void; onPersist: (session: ActiveWorkoutSession) => void; onFinish: (session: ActiveWorkoutSession) => void }) {
+function AdaptiveWorkoutSession({ session, profile, previousWorkout, preferences, onExit, onPersist, onFinish }: { session: ActiveWorkoutSession; profile: Profile; previousWorkout?: WorkoutHistory; preferences: AppPreferences; onExit: () => void; onPersist: (session: ActiveWorkoutSession) => void; onFinish: (session: ActiveWorkoutSession) => void }) {
   const normalizedSession = normalizeActiveWorkoutSession(session);
   const [state, setState] = useState(normalizedSession);
   const stateRef = useRef(normalizedSession);
@@ -1284,7 +1314,7 @@ function AdaptiveWorkoutSession({ session, previousWorkout, preferences, onExit,
           [currentSlotId]: completing ? [...currentDone, series].sort((a, b) => a - b) : currentDone.filter((item) => item !== series),
         },
       });
-      if (completing && current.rest > 0) {
+      if (completing && current.rest > 0 && series < current.sets) {
         next = startRest(next, current.rest);
         next = patchActiveSession(next, { activeRestExerciseId: currentSlotId, activeRestSeries: series });
       } else if (!completing) {
@@ -1351,8 +1381,19 @@ function AdaptiveWorkoutSession({ session, previousWorkout, preferences, onExit,
 
   const doneSeries = state.completedSeries[currentSlotId] || [];
   const completedRests = state.completedRestSeries[currentSlotId] || [];
-  const alternative = exercises.find((item) => current.exercise.alternativeIds.includes(item.id));
-  const alternatives = exercises.filter((exercise) => exercise.id !== current.exercise.id && (current.exercise.alternativeIds.includes(exercise.id) || exercise.movement === current.exercise.movement)).slice(0, 6);
+  const lastPainRegion = [...state.painEvents].reverse().find((event) => event.exerciseId === currentSlotId)?.region || painRegion;
+  const rankedAlternatives = rankExerciseSubstitutions({
+    current: current.exercise,
+    candidates: exercises,
+    experience: profile.experience,
+    location: profile.location,
+    reason: substitutionReason,
+    painRegion: substitutionReason === "Desconforto ou dor" ? lastPainRegion : "",
+    safetyAvoidCodes: detectSafetyCodes(profile),
+    previouslyPainfulExerciseIds: previousWorkout?.exerciseRecords?.filter((record) => record.painReported).map((record) => record.exerciseId),
+  }).slice(0, 6);
+  const alternatives = rankedAlternatives.map((item) => item.exercise);
+  const alternative = alternatives[0];
   const currentPains = state.painEvents.filter((event) => event.exerciseId === currentSlotId);
   return (
     <main className={`session-shell workout-font-${preferences.workoutFontSize}`}>
@@ -1364,10 +1405,11 @@ function AdaptiveWorkoutSession({ session, previousWorkout, preferences, onExit,
         <p className="muscle-line">{current.exercise.muscleGroups.join(" · ")} · {current.exercise.equipment}</p>
         {state.exerciseOverrides[currentSlotId] && <span className="substitution-badge">Exercício substituído nesta sessão</span>}
         <div className="prescription-grid"><div className="sets-control"><small>SÉRIES</small><span><button aria-label="Remover uma série" disabled={current.sets <= 1} onClick={() => changeSetCount(-1)}>−</button><strong>{current.sets}</strong><button aria-label="Adicionar uma série" disabled={current.sets >= 8} onClick={() => changeSetCount(1)}>+</button></span></div><div><small>REPETIÇÕES</small><strong>{current.reps}</strong></div><div><small>DESCANSO</small><strong>{current.rest ? `${current.rest}s` : "—"}</strong></div><div><small>ESFORÇO</small><strong>{current.targetRpe}</strong></div></div>
+        {state.currentExerciseIndex >= state.workout.warmup.length && state.currentExerciseIndex < state.workout.warmup.length + state.workout.main.length && <article className="exercise-progression"><small>PRÓXIMA META INDIVIDUAL</small><strong>{current.loadSuggestion}</strong></article>}
         {restRemaining > 0 && <div className="rest-timer rest-timer-expanded"><span>DESCANSO</span><strong>{Math.floor(restRemaining / 60).toString().padStart(2, "0")}:{(restRemaining % 60).toString().padStart(2, "0")}</strong><small>Próximo: {doneSeries.length < current.sets ? `série ${doneSeries.length + 1}` : items[state.currentExerciseIndex + 1]?.exercise.name || "finalização"}</small><div><button onClick={() => setState((currentState) => addRestSeconds(currentState, 15))}>+15 s</button>{state.restPausedSeconds === null ? <button onClick={() => setState((currentState) => pauseRest(currentState))}>Pausar</button> : <button onClick={() => setState((currentState) => resumeRest(currentState))}>Retomar</button>}<button onClick={() => setState((currentState) => skipRest(currentState))}>Pular</button></div></div>}
-        {current.rest > 0 && <div className="rest-progress" aria-label={`${completedRests.length} de ${current.sets} descansos concluídos`}><small>DESCANSOS</small><div>{Array.from({ length: current.sets }, (_, index) => index + 1).map((series) => <span key={series} className={`${completedRests.includes(series) ? "done" : ""} ${state.activeRestExerciseId === currentSlotId && state.activeRestSeries === series && restRemaining > 0 ? "active" : ""}`} title={`Descanso da série ${series}`}><b aria-hidden="true">◷</b><em>{series}</em></span>)}</div></div>}
+        {current.rest > 0 && current.sets > 1 && <div className="rest-progress" aria-label={`${completedRests.length} de ${current.sets - 1} descansos entre séries concluídos`}><small>DESCANSOS ENTRE SÉRIES</small><div>{Array.from({ length: current.sets - 1 }, (_, index) => index + 1).map((series) => <span key={series} className={`${completedRests.includes(series) ? "done" : ""} ${state.activeRestExerciseId === currentSlotId && state.activeRestSeries === series && restRemaining > 0 ? "active" : ""}`} title={`Descanso após a série ${series}`}><b aria-hidden="true">◷</b><em>{series}</em></span>)}</div></div>}
         <div className="series-row" aria-label="Séries concluídas">{Array.from({ length: current.sets }, (_, series) => series + 1).map((series) => <button key={series} aria-pressed={doneSeries.includes(series)} className={doneSeries.includes(series) ? "done" : ""} onClick={() => toggleSeries(series)}>{doneSeries.includes(series) ? "✓" : series}</button>)}</div>
-        <div className="session-fields three-fields"><label>Carga usada<input inputMode="decimal" value={state.loads[currentSlotId] || ""} onChange={(event) => patchMap("loads", currentSlotId, event.target.value)} placeholder={current.loadSuggestion} /></label><label>Repetições feitas<input inputMode="numeric" value={state.actualReps[currentSlotId] || ""} onChange={(event) => patchMap("actualReps", currentSlotId, event.target.value)} placeholder={current.reps} /></label><label>RIR da série<input inputMode="numeric" type="number" min="0" max="10" value={state.rir[currentSlotId] || ""} onChange={(event) => patchMap("rir", currentSlotId, event.target.value)} placeholder="Ex.: 3" /></label></div>
+        <div className="session-fields three-fields"><label>Carga usada<input inputMode="decimal" value={state.loads[currentSlotId] || ""} onChange={(event) => patchMap("loads", currentSlotId, event.target.value)} placeholder="Ex.: 20" /></label><label>Repetições feitas<input inputMode="numeric" value={state.actualReps[currentSlotId] || ""} onChange={(event) => patchMap("actualReps", currentSlotId, event.target.value)} placeholder={current.reps} /></label><label>RIR da série<input inputMode="numeric" type="number" min="0" max="10" value={state.rir[currentSlotId] || ""} onChange={(event) => patchMap("rir", currentSlotId, event.target.value)} placeholder="Ex.: 3" /></label></div>
         <ExerciseDemo key={current.exercise.id} exerciseId={current.exercise.id} exerciseName={current.exercise.name} compact />
         <details className="technique-card" open><summary>Como executar</summary><p>{current.exercise.instructions}</p><small>Cadência: {current.tempo}</small></details>
         <details className="technique-card"><summary>Erros e alternativa</summary><p>{current.exercise.commonErrors}</p>{alternative && <small>Alternativa sugerida: {alternative.name}</small>}</details>
@@ -1377,7 +1419,7 @@ function AdaptiveWorkoutSession({ session, previousWorkout, preferences, onExit,
         {currentPains.length > 0 && <div className="pain-event-list">{currentPains.map((event) => <span key={event.recordedAt}>{event.region} · {event.intensity}/10</span>)}</div>}
       </section>
       <footer className="session-nav"><button disabled={state.currentExerciseIndex === 0} onClick={() => patch({ currentExerciseIndex: Math.max(0, state.currentExerciseIndex - 1) })}>← Voltar</button>{state.currentExerciseIndex < items.length - 1 ? <button className="next" onClick={() => patch({ currentExerciseIndex: Math.min(items.length - 1, state.currentExerciseIndex + 1) })}>Próximo →</button> : <button className="next" onClick={() => setState((currentState) => enterFeedback(currentState))}>Revisar sessão →</button>}</footer>
-      {quickAction === "substitute" && <div className="bottom-sheet-backdrop" role="presentation" onClick={() => setQuickAction(null)}><section className="bottom-sheet" role="dialog" aria-modal="true" aria-labelledby="substitution-title" onClick={(event) => event.stopPropagation()}><header><div><small>AJUSTE DA SESSÃO</small><h2 id="substitution-title">Substituir exercício</h2></div><button aria-label="Fechar" onClick={() => setQuickAction(null)}>×</button></header><p>Escolha uma alternativa para {current.exercise.name}. O histórico manterá o motivo da troca.</p><div className="sheet-options">{alternatives.map((exercise) => <button key={exercise.id} aria-pressed={selectedAlternative === exercise.id} onClick={() => setSelectedAlternative(exercise.id)}><strong>{exercise.name}</strong><small>{exercise.equipment} · {exercise.muscleGroups.join(" · ")}</small></button>)}</div><label>Motivo<select value={substitutionReason} onChange={(event) => setSubstitutionReason(event.target.value)}><option>Equipamento indisponível</option><option>Desconforto ou dor</option><option>Preferência pessoal</option><option>Outro</option></select></label><button className="sheet-primary" disabled={!selectedAlternative} onClick={replaceCurrentExercise}>Aplicar substituição</button></section></div>}
+      {quickAction === "substitute" && <div className="bottom-sheet-backdrop" role="presentation" onClick={() => setQuickAction(null)}><section className="bottom-sheet" role="dialog" aria-modal="true" aria-labelledby="substitution-title" onClick={(event) => event.stopPropagation()}><header><div><small>AJUSTE INTELIGENTE</small><h2 id="substitution-title">Substituir exercício</h2></div><button aria-label="Fechar" onClick={() => setQuickAction(null)}>×</button></header><p>As opções preservam o movimento, o grupo muscular e o seu nível, evitando restrições e exercícios com dor registrada.</p><label>Motivo<select value={substitutionReason} onChange={(event) => { setSubstitutionReason(event.target.value); setSelectedAlternative(""); }}><option>Equipamento indisponível</option><option>Desconforto ou dor</option><option>Preferência pessoal</option><option>Outro</option></select></label><div className="sheet-options">{rankedAlternatives.length ? rankedAlternatives.map(({ exercise, explanation }) => <button key={exercise.id} aria-pressed={selectedAlternative === exercise.id} onClick={() => setSelectedAlternative(exercise.id)}><strong>{exercise.name}</strong><small>{explanation}</small><small>{exercise.equipment}</small></button>) : <article className="data-empty"><strong>Nenhuma troca segura encontrada</strong><p>Interrompa este movimento e siga apenas quando houver uma opção compatível.</p></article>}</div><button className="sheet-primary" disabled={!selectedAlternative} onClick={replaceCurrentExercise}>Aplicar substituição</button></section></div>}
       {quickAction === "pain" && <div className="bottom-sheet-backdrop" role="presentation" onClick={() => setQuickAction(null)}><section className="bottom-sheet" role="dialog" aria-modal="true" aria-labelledby="pain-title" onClick={(event) => event.stopPropagation()}><header><div><small>SEGURANÇA</small><h2 id="pain-title">Registrar desconforto</h2></div><button aria-label="Fechar" onClick={() => setQuickAction(null)}>×</button></header><p>O registro fica associado a {current.exercise.name} e aparece no resumo do treino.</p><label>Região do corpo<input value={painRegion} onChange={(event) => setPainRegion(event.target.value)} placeholder="Ex.: joelho direito" /></label><label>Intensidade: <strong>{painIntensity}/10</strong><input type="range" min="0" max="10" value={painIntensity} onChange={(event) => setPainIntensity(event.target.value)} /></label><div className="safety-note"><span>!</span><p>Interrompa o exercício em caso de dor aguda, tontura, falta de ar incomum ou piora relevante.</p></div><button className="sheet-primary danger" disabled={!painRegion.trim() || Number(painIntensity) < 1} onClick={registerPainEvent}>Salvar registro</button></section></div>}
       {exitPrompt && <ConfirmDialog title="Sair do treino?" description="Exercício, séries, carga, repetições e timer já estão salvos." confirmLabel="Salvar e sair" onConfirm={onExit} onCancel={() => setExitPrompt(false)} />}
     </main>

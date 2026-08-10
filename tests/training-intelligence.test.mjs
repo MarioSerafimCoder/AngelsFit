@@ -3,12 +3,14 @@ import test from "node:test";
 
 import {
   buildCalendarSchedule,
+  buildWeeklyMuscleVolume,
   calculateAdherence,
   eligibleProtocols,
   applyReturnAdaptation,
   evaluatePhase,
   getReturnAdaptation,
   migrateTrainingHistory,
+  normalizedTrainingStatus,
   recommendedWorkoutIndex,
   suggestDoubleProgression,
 } from "../app/training-intelligence.ts";
@@ -51,6 +53,22 @@ test("adherence separates completed, partial and skipped sessions", () => {
   assert.equal(summary.partialSessions, 1);
   assert.equal(summary.skippedSessions, 1);
   assert.equal(summary.adherencePercentage, 33);
+});
+
+test("a session with no completed movement is not reported as completed", () => {
+  const empty = record("empty", "2026-08-05", "completed", { completedExercises: 0, totalExercises: 10 });
+  const short = record("short", "2026-08-05", "completed", { completedExercises: 4, totalExercises: 10 });
+  assert.equal(normalizedTrainingStatus(empty), "interrupted");
+  assert.equal(normalizedTrainingStatus(short), "partial");
+  assert.equal(recommendedWorkoutIndex([short], workouts.length), 0);
+});
+
+test("weekly muscle volume compares performed sets with the current plan", () => {
+  const exercise = { exercise: { id: "squat", primaryGroup: "Quadríceps", muscleGroups: ["Quadríceps"] }, sets: 3 };
+  const planned = [{ ...workouts[0], main: [exercise] }];
+  const session = record("1", "2026-08-06", "completed", { exerciseRecords: [{ exerciseId: "squat", primaryMuscleGroup: "Quadríceps", setsCompleted: 3 }] });
+  const volume = buildWeeklyMuscleVolume([session], planned, new Date(2026, 7, 6, 12));
+  assert.deepEqual(volume[0], { muscleGroup: "Quadríceps", completedSets: 3, plannedSets: 3, percentage: 100, status: "target" });
 });
 
 test("phase cannot advance before twelve adequate completed sessions", () => {

@@ -69,4 +69,13 @@ test("double progression requires two matching, complete and technically adequat
   const exerciseRecord = { exerciseId: "squat", setsPlanned: 3, setsCompleted: 3, repetitions: 12, load: 40, rirOrRpe: 2, executionFeedback: "adequate", painReported: false };
   const guidance = exerciseProgressionGuidance({ history: [completed({ exerciseRecords: [exerciseRecord] }), completed({ exerciseRecords: [exerciseRecord] })], exerciseId: "squat", upperRepetitionTarget: 12, periodization });
   assert.match(guidance, /Progressão conquistada/);
+  assert.match(guidance, /42 kg/);
+});
+
+test("individual progression keeps the last load and sets the next repetition target", () => {
+  const periodization = buildPeriodizationPlan({ goal: "Hipertrofia", safetyCodes: [], history: [], sessionsPerWeek: 3 });
+  const exerciseRecord = { exerciseId: "row", setsPlanned: 3, setsCompleted: 3, repetitions: 10, load: 30, rirOrRpe: 2, executionFeedback: "adequate", painReported: false };
+  const guidance = exerciseProgressionGuidance({ history: [completed({ exerciseRecords: [exerciseRecord] })], exerciseId: "row", upperRepetitionTarget: 12, periodization });
+  assert.match(guidance, /Mantenha 30 kg/);
+  assert.match(guidance, /11 repetições/);
 });

@@ -30,7 +30,7 @@
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 html { background: var(--bg); color-scheme: dark; }
 html[data-theme="light"] { color-scheme: light; }
-body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--font-geist), -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+body { margin: 0; overflow-x: clip; background: var(--bg); color: var(--text); font-family: var(--font-geist), -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
 button, input, textarea { font: inherit; }
 button { color: inherit; }
 .app-font-compact { --app-font-boost: 0px; }
@@ -457,5 +457,38 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .preview-compact strong { font-size: calc(14px + var(--app-font-boost, 0px)); }.preview-compact small { font-size: calc(9px + var(--app-font-boost, 0px)); }
 .preview-comfortable strong { font-size: calc(18px + var(--app-font-boost, 0px)); }.preview-comfortable small { font-size: calc(11px + var(--app-font-boost, 0px)); }
 .preview-large strong { font-size: calc(22px + var(--app-font-boost, 0px)); }.preview-large small { font-size: calc(13px + var(--app-font-boost, 0px)); }
+
+.exercise-progression { display: grid; gap: 5px; margin: -10px 0 18px; padding: 13px 14px; border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--line)); border-radius: 16px; background: var(--accent-soft); }
+.exercise-progression small { color: var(--accent); font-size: var(--workout-label-size, 9px); font-weight: 900; letter-spacing: .11em; }
+.exercise-progression strong { font-size: var(--workout-body-size, 12px); line-height: 1.45; }
+.muscle-volume-list { display: grid; gap: 8px; }
+.muscle-volume-list article { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 9px 12px; padding: 14px; border: 1px solid var(--line); border-radius: 18px; background: var(--surface); }
+.muscle-volume-list article > div { min-width: 0; display: grid; gap: 3px; }
+.muscle-volume-list strong { font-size: calc(12px + var(--app-font-boost, 0px)); }
+.muscle-volume-list small { color: var(--muted); font-size: calc(9px + var(--app-font-boost, 0px)); }
+.muscle-volume-list article > span { grid-column: 1 / -1; height: 7px; overflow: hidden; border-radius: 999px; background: var(--surface-3); }
+.muscle-volume-list article > span i { display: block; height: 100%; border-radius: inherit; background: var(--accent); }
+.muscle-volume-list b { color: var(--muted); font-size: calc(9px + var(--app-font-boost, 0px)); font-weight: 850; }
+.muscle-volume-list .volume-target { border-color: color-mix(in srgb, #56d364 35%, var(--line)); }
+.muscle-volume-list .volume-target b { color: #76d981; }
+.muscle-volume-list .volume-above { border-color: color-mix(in srgb, #f2cc60 45%, var(--line)); }
+.muscle-volume-list .volume-above b { color: #f2cc60; }
+
+@media (max-width: 390px) {
+  .screen { padding-inline: 14px; }
+  .week-strip { margin-inline: -14px; padding-inline: 14px; }
+  .hero-card { padding: 20px; }
+  .hero-card h2, .hero-card > span { max-width: calc(100% - 58px); }
+  .sequence-nav { grid-template-columns: 1fr 1fr; }
+  .sequence-nav button:first-child { grid-column: 1 / -1; }
+  .metrics-grid { grid-template-columns: 1fr 1fr; }
+  .metrics-grid article:first-child { grid-column: 1 / -1; }
+  .session-fields.three-fields, .readiness-grid, .metric-form-grid { grid-template-columns: 1fr; }
+  .workout-font-large .prescription-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .workout-font-large .session-header { gap: 8px; }
+  .workout-font-large .session-header > div { min-width: 0; }
+  .workout-font-large .session-header small { max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .font-size-options button { padding-inline: 3px; }
+}
 
 @media (max-width: 370px) { .workout-font-large { --workout-title-size: 40px; --workout-setup-title-size: 37px; }.workout-font-large .prescription-grid { grid-template-columns: repeat(2, 1fr); }.font-size-options button { min-height: 68px; }.font-size-setting-header small { font-size: calc(9px + var(--app-font-boost, 0px)); } }
