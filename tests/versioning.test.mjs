@@ -61,4 +61,7 @@ test("keeps published metadata and the iPhone cache aligned with the content ver
   assert.equal(metadata.contentVersion, CONTENT_VERSION);
   assert.match(serviceWorker, new RegExp(`CACHE_NAME = "angels-fit-shell-v\\d+-${cacheVersion}"`));
   assert.match(serviceWorker, /version\.json[\s\S]*cache: "no-store"/);
+  assert.match(serviceWorker, /clients\.matchAll\(\{ type: "window", includeUncontrolled: true \}\)/);
+  assert.match(serviceWorker, /client\.navigate\(url\.toString\(\)\)/);
+  assert.match(serviceWorker, /fetch\(event\.request, \{ cache: "no-store" \}\)/);
 });

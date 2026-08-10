@@ -267,7 +267,21 @@ export default function AngelsFitApp() {
     const handleOffline = () => setOnline(false);
     window.addEventListener("online", handleOnline);
     window.addEventListener("offline", handleOffline);
-    if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => undefined);
+    let refreshWorker: (() => void) | undefined;
+    if ("serviceWorker" in navigator) {
+      refreshWorker = () => {
+        if (!navigator.onLine || document.visibilityState === "hidden") return;
+        void navigator.serviceWorker.getRegistration().then((registration) => registration?.update()).catch(() => undefined);
+      };
+      void navigator.serviceWorker.register("/sw.js", { updateViaCache: "none" })
+        .then(async (registration) => {
+          registration.waiting?.postMessage({ type: "SKIP_WAITING" });
+          await registration.update();
+        })
+        .catch(() => undefined);
+      window.addEventListener("online", refreshWorker);
+      document.addEventListener("visibilitychange", refreshWorker);
+    }
     void configureNativeChrome();
     void getInstalledAppVersion().then((version) => { if (version && mounted) setInstalledAppVersion(version); });
 
@@ -275,6 +289,10 @@ export default function AngelsFitApp() {
       mounted = false;
       window.removeEventListener("online", handleOnline);
       window.removeEventListener("offline", handleOffline);
+      if (refreshWorker) {
+        window.removeEventListener("online", refreshWorker);
+        document.removeEventListener("visibilitychange", refreshWorker);
+      }
     };
   }, []);
 
