@@ -29,6 +29,31 @@ export function isNativeApp(): boolean {
   return bridge()?.isNativePlatform?.() === true || nativePlatform() !== "web";
 }
 
+type IosDeviceInfo = {
+  userAgent?: string;
+  platform?: string;
+  maxTouchPoints?: number;
+  nativePlatform?: "android" | "ios" | "web";
+};
+
+export function isIosDevice(deviceInfo?: IosDeviceInfo): boolean {
+  const detectedNativePlatform = deviceInfo?.nativePlatform ?? nativePlatform();
+  if (detectedNativePlatform === "ios") return true;
+  if (detectedNativePlatform === "android") return false;
+
+  const browserInfo = deviceInfo ?? (typeof navigator === "undefined" ? {} : {
+    userAgent: navigator.userAgent,
+    platform: navigator.platform,
+    maxTouchPoints: navigator.maxTouchPoints,
+  });
+  const userAgent = browserInfo.userAgent ?? "";
+  const platform = browserInfo.platform ?? "";
+  const maxTouchPoints = browserInfo.maxTouchPoints ?? 0;
+
+  return /iPad|iPhone|iPod/i.test(userAgent)
+    || (platform === "MacIntel" && maxTouchPoints > 1);
+}
+
 export async function hapticImpact(enabled = true): Promise<void> {
   if (!enabled) return;
   const haptics = plugin("Haptics");

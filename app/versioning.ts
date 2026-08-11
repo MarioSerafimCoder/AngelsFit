@@ -3,7 +3,7 @@ import { normalizeActiveWorkoutSession, type ActiveWorkoutSession } from "./acti
 import { migrateTrainingHistory, type TrainingHistoryLike } from "./training-intelligence.ts";
 
 export const APP_VERSION = "1.0";
-export const CONTENT_VERSION = "2026.08.11.1";
+export const CONTENT_VERSION = "2026.08.11.2";
 export const CURRENT_DATA_SCHEMA_VERSION = 5;
 export const MINIMUM_SUPPORTED_APP_VERSION = "1.0";
 
