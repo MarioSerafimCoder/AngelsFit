@@ -1,9 +1,10 @@
 import type { SyncKeyValueStorage } from "./data-repository";
+import { normalizeActiveWorkoutSession, type ActiveWorkoutSession } from "./active-session.ts";
 import { migrateTrainingHistory, type TrainingHistoryLike } from "./training-intelligence.ts";
 
 export const APP_VERSION = "1.0";
-export const CONTENT_VERSION = "2026.08.09.10";
-export const CURRENT_DATA_SCHEMA_VERSION = 4;
+export const CONTENT_VERSION = "2026.08.11.1";
+export const CURRENT_DATA_SCHEMA_VERSION = 5;
 export const MINIMUM_SUPPORTED_APP_VERSION = "1.0";
 
 export const DATA_SCHEMA_VERSION_KEY = "angelsfit.data-schema-version";
@@ -28,6 +29,40 @@ const migrations: Record<number, Migration> = {
       storage.setItem(historyKey, JSON.stringify(migrateTrainingHistory(parsed as TrainingHistoryLike[])));
     }
     storage.setItem("angelsfit.migration.4", "complete");
+  },
+  5: (storage) => {
+    if (storage.getItem("angelsfit.migration.5") !== null) return;
+    const activeSessionKey = "angelsfit.active-session.v1";
+    const rawSession = storage.getItem(activeSessionKey);
+    if (rawSession !== null) {
+      const parsed = JSON.parse(rawSession) as ActiveWorkoutSession;
+      storage.setItem(activeSessionKey, JSON.stringify(normalizeActiveWorkoutSession(parsed)));
+    }
+    const historyKey = "brasafit.history.v2";
+    const rawHistory = storage.getItem(historyKey);
+    if (rawHistory !== null) {
+      const parsed = JSON.parse(rawHistory) as TrainingHistoryLike[];
+      const expanded = parsed.map((workout) => ({
+        ...workout,
+        exerciseRecords: (workout.exerciseRecords || []).map((record) => record.sets?.length ? record : {
+          ...record,
+          sets: Array.from({ length: Math.max(record.setsPlanned || record.setsCompleted || 0, 0) }, (_, index) => ({
+            series: index + 1,
+            completed: index < record.setsCompleted,
+            loadKg: record.load || 0,
+            repetitions: record.repetitions || 0,
+            rir: record.rirOrRpe || null,
+            durationSeconds: 0,
+            assistanceKg: 0,
+            distanceKm: 0,
+            side: "ambos" as const,
+            loadType: "carga" as const,
+          })),
+        }),
+      }));
+      storage.setItem(historyKey, JSON.stringify(expanded));
+    }
+    storage.setItem("angelsfit.migration.5", "complete");
   },
 };
 

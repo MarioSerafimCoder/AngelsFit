@@ -49,7 +49,7 @@ test("parses a complete AngelsFit backup including preferences", () => {
   assert.equal(backup.history.length, 1);
   assert.equal(backup.measurements.length, 1);
   assert.equal(backup.checkIns.length, 1);
-  assert.deepEqual(backup.settings, settings);
+  assert.deepEqual(backup.settings, { ...settings, preferences: { ...settings.preferences, restNotifications: false } });
 });
 
 test("rejects malformed, foreign and future backup files", () => {

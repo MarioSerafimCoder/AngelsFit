@@ -6,7 +6,7 @@ import {
   isValidProfile,
 } from "./data-repository.ts";
 
-export const BACKUP_FORMAT_VERSION = 8;
+export const BACKUP_FORMAT_VERSION = 9;
 export const MAX_BACKUP_FILE_SIZE = 10 * 1024 * 1024;
 
 const COMPATIBLE_APP_NAMES = new Set(["AngelsFit", "Angels Fit", "BrasaFit", "FitLocal"]);
@@ -16,6 +16,7 @@ export type BackupPreferences = {
   sound: boolean;
   vibration: boolean;
   keepAwake: boolean;
+  restNotifications: boolean;
   workoutFontSize: "compact" | "comfortable" | "large";
 };
 
@@ -50,6 +51,7 @@ function isValidPreferences(value: unknown): value is BackupPreferences {
   return typeof value.sound === "boolean"
     && typeof value.vibration === "boolean"
     && typeof value.keepAwake === "boolean"
+    && (value.restNotifications === undefined || typeof value.restNotifications === "boolean")
     && typeof value.workoutFontSize === "string"
     && WORKOUT_FONT_SIZES.has(value.workoutFontSize);
 }
@@ -96,7 +98,7 @@ export function parseBackupJson(raw: string): ParsedBackup {
       || !isValidPreferences(value.settings.preferences)) {
       throw new BackupValidationError("As preferências salvas neste backup são inválidas.");
     }
-    settings = { theme: value.settings.theme, preferences: value.settings.preferences };
+    settings = { theme: value.settings.theme, preferences: { ...value.settings.preferences, restNotifications: Boolean(value.settings.preferences.restNotifications) } as BackupPreferences };
   }
 
   return {

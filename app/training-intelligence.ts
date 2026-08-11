@@ -2,6 +2,21 @@ import type { GeneratedWorkout } from "./workout-engine";
 
 export type TrainingSessionStatus = "planned" | "in_progress" | "completed" | "partial" | "skipped" | "repeated" | "interrupted" | "manually_advanced";
 
+export type SeriesPerformanceRecord = {
+  series: number;
+  completed: boolean;
+  loadKg: number;
+  repetitions: number;
+  rir: number | null;
+  durationSeconds: number;
+  assistanceKg: number;
+  distanceKm: number;
+  side: "ambos" | "direito" | "esquerdo";
+  loadType: "carga" | "peso_corporal" | "assistencia" | "lastro";
+  actualRestSeconds?: number;
+  restStatus?: "completed" | "skipped";
+};
+
 export type ExercisePerformanceRecord = {
   exerciseId: string;
   plannedExerciseId?: string;
@@ -17,6 +32,7 @@ export type ExercisePerformanceRecord = {
   executionFeedback: "adequate" | "limited" | "unknown";
   painReported: boolean;
   substitutedExerciseId?: string;
+  sets?: SeriesPerformanceRecord[];
 };
 
 export type TrainingHistoryLike = {

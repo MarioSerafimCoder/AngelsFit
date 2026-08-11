@@ -64,9 +64,7 @@ test("includes check-in, sequence calendar and protected interaction flows", asy
   assert.match(engine, /setDate\(cycleEnd\.getDate\(\) \+ 13\)/);
   assert.match(engine, /reviewPreviousCycle/);
   assert.match(engine, /postpartumProgram/);
-  const postpartumEngine = engine.slice(engine.indexOf("function postpartumProgram"), engine.indexOf("export function generateProgram"));
-  assert.doesNotMatch(postpartumEngine, /clearance_required|workouts:\s*\[\]/);
-  assert.match(postpartumEngine, /status: "ready"/);
+  assert.match(engine, /assessPostpartumSafety/);
   assert.match(engine, /recommendedWorkoutIndex/);
   assert.match(engine, /buildPeriodizationPlan/);
   assert.match(periodization, /Mesociclo de hipertrofia/);
@@ -81,7 +79,7 @@ test("includes check-in, sequence calendar and protected interaction flows", asy
   assert.match(engine, /targetComplexity/);
   assert.match(postpartum, /block: 1, weeks: "10-11"/);
   assert.match(postpartum, /block: 8, weeks: "24-25"/);
-  assert.match(engine, /Liberação e sintomas podem ser atualizados a qualquer momento e não bloqueiam/);
+  assert.match(engine, /O programa estruturado começa a partir da 10ª semana pós-parto/);
   assert.match(app, /Demonstração ilustrativa em loop/);
   assert.ok((media.match(/videoUrl/g) || []).length >= 10, "common movements should have bundled media");
   assert.ok((mediaQueries.match(/:\s*"/g) || []).length >= 70, "all movements should have an on-demand media query");

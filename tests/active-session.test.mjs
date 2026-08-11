@@ -4,12 +4,17 @@ import test from "node:test";
 import {
   addRestSeconds,
   beginActiveSession,
+  completeRest,
+  completeSeriesPerformance,
   createActiveWorkoutSession,
   getElapsedSeconds,
   getRestRemainingSeconds,
+  isCardioPlanValid,
   normalizeActiveWorkoutSession,
   pauseRest,
+  patchActiveSession,
   resumeRest,
+  seriesPerformances,
   sessionReadiness,
   startRest,
   summarizeActiveSession,
@@ -31,6 +36,40 @@ test("combines today's check-in with the previous workout and keeps blank answer
   assert.equal(sessionReadiness(blank), "alta");
   assert.equal(sessionReadiness(blank, { sessionRpe: 9, painScore: 4, status: "partial" }), "baixa");
   assert.equal(sessionReadiness(blank, { painScore: 7 }), "atenção");
+});
+
+test("does not start a session when today's safety check requires attention", () => {
+  const session = { ...createActiveWorkoutSession(workout, 0), newPain: true };
+  const started = beginActiveSession(session, 1_000);
+
+  assert.equal(sessionReadiness(session), "atenção");
+  assert.equal(started.status, "setup");
+  assert.equal(started.elapsedStartedAt, null);
+});
+
+test("materializes readiness-adjusted sets so completion uses what the user saw", () => {
+  const previousWorkout = { sessionRpe: 9, painScore: 4, status: "partial" };
+  let session = beginActiveSession(createActiveWorkoutSession(workout, 0), 1_000, previousWorkout);
+
+  assert.equal(sessionReadiness(session, previousWorkout), "baixa");
+  assert.equal(session.setOverrides.squat, 2);
+
+  session = { ...session, completedSeries: { warmup: [1], squat: [1, 2] } };
+  const summary = summarizeActiveSession(session, 2_000);
+  assert.equal(summary.completedExercises, 2);
+});
+
+test("validates and summarizes the cardio plan stored in the active session", () => {
+  const session = createActiveWorkoutSession(workout, 0);
+  assert.equal(session.cardioIntensity, "Sem cardio hoje");
+  assert.equal(isCardioPlanValid(session), true);
+  assert.equal(isCardioPlanValid({ cardioIntensity: "Moderada", cardioMinutes: "" }), false);
+  assert.equal(isCardioPlanValid({ cardioIntensity: "Moderada", cardioMinutes: "20.5" }), false);
+  assert.equal(isCardioPlanValid({ cardioIntensity: "Moderada", cardioMinutes: "25" }), true);
+
+  const summary = summarizeActiveSession({ ...session, cardioIntensity: "Moderada", cardioMinutes: "25" }, 0);
+  assert.equal(summary.cardioMinutes, 25);
+  assert.equal(summary.cardioIntensity, "Moderada");
 });
 
 const workout = {
@@ -90,6 +129,47 @@ test("summarizes completed series, volume and repetitions from persisted state",
   assert.equal(summary.totalVolumeKg, 600);
   assert.equal(summary.elapsedSeconds, 120);
   assert.equal(summary.cardioMinutes, 12);
+});
+
+test("stores different values per series and calculates the real volume", () => {
+  let session = beginActiveSession(createActiveWorkoutSession(workout, 0), 0);
+  session = completeSeriesPerformance(session, "warmup", 1, { durationSeconds: "180" }, 1_000);
+  session = completeSeriesPerformance(session, "squat", 1, { loadKg: "20", repetitions: "12", rir: "3" }, 2_000);
+  session = completeSeriesPerformance(session, "squat", 2, { loadKg: "22.5", repetitions: "10", rir: "2" }, 3_000);
+  session = completeSeriesPerformance(session, "squat", 3, { loadKg: "25", repetitions: "8", rir: "1" }, 4_000);
+
+  const summary = summarizeActiveSession(session, 5_000);
+  assert.equal(summary.totalVolumeKg, 665);
+  assert.equal(summary.estimatedOneRepMax, 31.7);
+  assert.deepEqual(seriesPerformances(session, "squat", 3).map((entry) => entry.loadKg), ["20", "22.5", "25"]);
+  assert.equal(summary.averageRir, 2);
+});
+
+test("records the actual rest time for the series", () => {
+  let session = beginActiveSession(createActiveWorkoutSession(workout, 0), 0);
+  session = completeSeriesPerformance(session, "squat", 1, { loadKg: "20", repetitions: "10" }, 5_000);
+  session = startRest(session, 90, 10_000);
+  session = patchActiveSession(session, { activeRestExerciseId: "squat", activeRestSeries: 1 }, 10_000);
+  session = completeRest(session, 70_000);
+
+  const firstSeries = seriesPerformances(session, "squat", 3)[0];
+  assert.equal(firstSeries.actualRestSeconds, 60);
+  assert.equal(firstSeries.restStatus, "completed");
+  assert.equal(session.lastRestSeries, 1);
+});
+
+test("migrates an old exercise-level load into its completed series", () => {
+  const legacy = createActiveWorkoutSession(workout, 0);
+  delete legacy.seriesData;
+  legacy.schemaVersion = 1;
+  legacy.completedSeries = { squat: [1, 2, 3] };
+  legacy.loads = { squat: "30" };
+  legacy.actualReps = { squat: "8" };
+  legacy.rir = { squat: "2" };
+
+  const normalized = normalizeActiveWorkoutSession(legacy);
+  assert.equal(normalized.schemaVersion, 2);
+  assert.deepEqual(seriesPerformances(normalized, "squat", 3).map((entry) => [entry.completed, entry.loadKg, entry.repetitions, entry.rir]), [[true, "30", "8", "2"], [true, "30", "8", "2"], [true, "30", "8", "2"]]);
 });
 
 test("normalizes older persisted sessions and includes pain events in the summary", () => {

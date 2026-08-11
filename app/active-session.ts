@@ -7,8 +7,27 @@ function calculateEstimatedOneRepMax(loadKg: number, repetitions: number): numbe
 
 export type SessionStatus = "setup" | "active" | "feedback";
 
+export type SeriesLoadType = "carga" | "peso_corporal" | "assistencia" | "lastro";
+export type SeriesRestStatus = "completed" | "skipped";
+
+export type SeriesPerformance = {
+  series: number;
+  completed: boolean;
+  loadKg: string;
+  repetitions: string;
+  rir: string;
+  durationSeconds: string;
+  assistanceKg: string;
+  distanceKm: string;
+  side: "ambos" | "direito" | "esquerdo";
+  loadType: SeriesLoadType;
+  completedAt?: string;
+  actualRestSeconds?: number;
+  restStatus?: SeriesRestStatus;
+};
+
 export type ActiveWorkoutSession = {
-  schemaVersion: 1;
+  schemaVersion: 2;
   id: string;
   workout: GeneratedWorkout;
   plannedDate: string;
@@ -22,6 +41,7 @@ export type ActiveWorkoutSession = {
   elapsedStartedAt: string | null;
   currentExerciseIndex: number;
   completedSeries: Record<string, number[]>;
+  seriesData: Record<string, SeriesPerformance[]>;
   setOverrides: Record<string, number>;
   completedRestSeries: Record<string, number[]>;
   loads: Record<string, string>;
@@ -33,14 +53,21 @@ export type ActiveWorkoutSession = {
   painEvents: Array<{ exerciseId: string; region: string; intensity: number; recordedAt: string }>;
   restEndsAt: string | null;
   restPausedSeconds: number | null;
+  restStartedAt: string | null;
+  restElapsedBeforeSeconds: number;
+  restTargetSeconds: number | null;
   activeRestExerciseId: string | null;
   activeRestSeries: number | null;
+  lastRestExerciseId: string | null;
+  lastRestSeries: number | null;
   sleepLastNight: string;
   energy: string;
   stress: string;
   painBefore: string;
   newPain: boolean;
   postpartumAlert: boolean;
+  plannedCardioMinutes: string;
+  plannedCardioIntensity: string;
   cardioMinutes: string;
   cardioIntensity: string;
   sessionRpe: string;
@@ -74,7 +101,7 @@ function sessionId(now: number): string {
 export function createActiveWorkoutSession(workout: GeneratedWorkout, now = Date.now(), options: Partial<Pick<ActiveWorkoutSession, "plannedDate" | "sequenceNumber" | "sequenceAdvance" | "sequenceAction">> = {}): ActiveWorkoutSession {
   const timestamp = iso(now);
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     id: sessionId(now),
     workout,
     plannedDate: options.plannedDate || timestamp.slice(0, 10),
@@ -88,6 +115,7 @@ export function createActiveWorkoutSession(workout: GeneratedWorkout, now = Date
     elapsedStartedAt: null,
     currentExerciseIndex: 0,
     completedSeries: {},
+    seriesData: {},
     setOverrides: {},
     completedRestSeries: {},
     loads: {},
@@ -99,30 +127,128 @@ export function createActiveWorkoutSession(workout: GeneratedWorkout, now = Date
     painEvents: [],
     restEndsAt: null,
     restPausedSeconds: null,
+    restStartedAt: null,
+    restElapsedBeforeSeconds: 0,
+    restTargetSeconds: null,
     activeRestExerciseId: null,
     activeRestSeries: null,
+    lastRestExerciseId: null,
+    lastRestSeries: null,
     sleepLastNight: "",
     energy: "",
     stress: "",
     painBefore: "",
     newPain: false,
     postpartumAlert: false,
+    plannedCardioMinutes: "",
+    plannedCardioIntensity: "Sem cardio hoje",
     cardioMinutes: "",
-    cardioIntensity: "",
+    cardioIntensity: "Sem cardio hoje",
     sessionRpe: "",
     painAfter: "",
     postSymptoms: [],
   };
 }
 
+export function emptySeriesPerformance(series: number): SeriesPerformance {
+  return {
+    series,
+    completed: false,
+    loadKg: "",
+    repetitions: "",
+    rir: "",
+    durationSeconds: "",
+    assistanceKg: "",
+    distanceKm: "",
+    side: "ambos",
+    loadType: "carga",
+  };
+}
+
+function normalizeSeriesPerformance(value: Partial<SeriesPerformance>, series: number): SeriesPerformance {
+  return {
+    ...emptySeriesPerformance(series),
+    ...value,
+    series,
+    completed: Boolean(value.completed),
+  };
+}
+
+function migrateLegacySeries(session: ActiveWorkoutSession): Record<string, SeriesPerformance[]> {
+  const migrated: Record<string, SeriesPerformance[]> = {};
+  for (const [exerciseId, completed] of Object.entries(session.completedSeries || {})) {
+    const highestSeries = Math.max(0, ...completed);
+    if (!highestSeries) continue;
+    migrated[exerciseId] = Array.from({ length: highestSeries }, (_, index) => {
+      const series = index + 1;
+      return normalizeSeriesPerformance({
+        series,
+        completed: completed.includes(series),
+        loadKg: session.loads?.[exerciseId] || "",
+        repetitions: session.actualReps?.[exerciseId] || "",
+        rir: session.rir?.[exerciseId] || "",
+      }, series);
+    });
+  }
+  return migrated;
+}
+
+export function seriesPerformances(session: ActiveWorkoutSession, exerciseId: string, setCount: number): SeriesPerformance[] {
+  const stored = session.seriesData?.[exerciseId] || [];
+  return Array.from({ length: Math.max(0, setCount) }, (_, index) => {
+    const series = index + 1;
+    const existing = stored.find((item) => item.series === series);
+    return normalizeSeriesPerformance(existing || {}, series);
+  });
+}
+
+export function patchSeriesPerformance(
+  session: ActiveWorkoutSession,
+  exerciseId: string,
+  series: number,
+  values: Partial<SeriesPerformance>,
+  now = Date.now(),
+): ActiveWorkoutSession {
+  const existing = session.seriesData?.[exerciseId] || [];
+  const nextEntry = normalizeSeriesPerformance({ ...existing.find((item) => item.series === series), ...values }, series);
+  const nextSeries = [...existing.filter((item) => item.series !== series), nextEntry].sort((left, right) => left.series - right.series);
+  const completed = nextSeries.filter((item) => item.completed).map((item) => item.series);
+  return patchActiveSession(session, {
+    seriesData: { ...session.seriesData, [exerciseId]: nextSeries },
+    completedSeries: { ...session.completedSeries, [exerciseId]: completed },
+  }, now);
+}
+
+export function completeSeriesPerformance(
+  session: ActiveWorkoutSession,
+  exerciseId: string,
+  series: number,
+  values: Partial<SeriesPerformance>,
+  now = Date.now(),
+): ActiveWorkoutSession {
+  return patchSeriesPerformance(session, exerciseId, series, { ...values, completed: true, completedAt: iso(now) }, now);
+}
+
+export function reopenSeriesPerformance(session: ActiveWorkoutSession, exerciseId: string, series: number, now = Date.now()): ActiveWorkoutSession {
+  return patchSeriesPerformance(session, exerciseId, series, { completed: false, completedAt: undefined, actualRestSeconds: undefined, restStatus: undefined }, now);
+}
+
 export function normalizeActiveWorkoutSession(session: ActiveWorkoutSession): ActiveWorkoutSession {
+  const rawSeriesData = session.seriesData && Object.keys(session.seriesData).length ? session.seriesData : migrateLegacySeries(session);
+  const seriesData = Object.fromEntries(Object.entries(rawSeriesData).map(([exerciseId, entries]) => [
+    exerciseId,
+    entries.map((entry, index) => normalizeSeriesPerformance(entry, entry.series || index + 1)),
+  ]));
+  const setupOrActive = session.status === "setup" || session.status === "active";
   return {
     ...session,
+    schemaVersion: 2,
     plannedDate: session.plannedDate || session.createdAt.slice(0, 10),
     sequenceNumber: session.sequenceNumber || 1,
     sequenceAdvance: session.sequenceAdvance ?? 1,
     sequenceAction: session.sequenceAction || "recommended",
     completedSeries: session.completedSeries || {},
+    seriesData,
     setOverrides: session.setOverrides || {},
     completedRestSeries: session.completedRestSeries || {},
     loads: session.loads || {},
@@ -133,8 +259,17 @@ export function normalizeActiveWorkoutSession(session: ActiveWorkoutSession): Ac
     substitutions: session.substitutions || [],
     painEvents: session.painEvents || [],
     postSymptoms: session.postSymptoms || [],
+    cardioMinutes: session.cardioMinutes || "",
+    cardioIntensity: session.cardioIntensity || "Sem cardio hoje",
+    plannedCardioMinutes: session.plannedCardioMinutes ?? (setupOrActive ? session.cardioMinutes || "" : ""),
+    plannedCardioIntensity: session.plannedCardioIntensity || (setupOrActive ? session.cardioIntensity || "Sem cardio hoje" : "Sem cardio hoje"),
+    restStartedAt: session.restStartedAt || null,
+    restElapsedBeforeSeconds: session.restElapsedBeforeSeconds || 0,
+    restTargetSeconds: session.restTargetSeconds ?? null,
     activeRestExerciseId: session.activeRestExerciseId || null,
     activeRestSeries: session.activeRestSeries || null,
+    lastRestExerciseId: session.lastRestExerciseId || null,
+    lastRestSeries: session.lastRestSeries || null,
   };
 }
 
@@ -146,9 +281,20 @@ export function patchActiveSession(
   return { ...session, ...patch, updatedAt: iso(now) };
 }
 
-export function beginActiveSession(session: ActiveWorkoutSession, now = Date.now()): ActiveWorkoutSession {
+export function beginActiveSession(session: ActiveWorkoutSession, now = Date.now(), previousWorkout?: PreviousWorkoutReadiness): ActiveWorkoutSession {
   if (session.status !== "setup") return session;
-  return patchActiveSession(session, { status: "active", elapsedStartedAt: iso(now) }, now);
+  const readiness = sessionReadiness(session, previousWorkout);
+  if (readiness === "atenção") return session;
+
+  const setOverrides = { ...session.setOverrides };
+  for (const item of session.workout.main) {
+    const adjustedSets = effectiveSets(item.sets, readiness);
+    if (adjustedSets !== item.sets && setOverrides[item.exercise.id] === undefined) {
+      setOverrides[item.exercise.id] = adjustedSets;
+    }
+  }
+
+  return patchActiveSession(session, { status: "active", elapsedStartedAt: iso(now), setOverrides }, now);
 }
 
 export function getElapsedSeconds(session: ActiveWorkoutSession, now = Date.now()): number {
@@ -158,14 +304,21 @@ export function getElapsedSeconds(session: ActiveWorkoutSession, now = Date.now(
 }
 
 export function enterFeedback(session: ActiveWorkoutSession, now = Date.now()): ActiveWorkoutSession {
-  return patchActiveSession(session, {
+  const withoutRest = session.activeRestExerciseId ? skipRest(session, now) : session;
+  const usePlannedCardio = withoutRest.cardioIntensity === "Sem cardio hoje" && withoutRest.cardioMinutes === "";
+  return patchActiveSession(withoutRest, {
     status: "feedback",
     elapsedBeforeSeconds: getElapsedSeconds(session, now),
     elapsedStartedAt: null,
     restEndsAt: null,
     restPausedSeconds: null,
+    restStartedAt: null,
+    restElapsedBeforeSeconds: 0,
+    restTargetSeconds: null,
     activeRestExerciseId: null,
     activeRestSeries: null,
+    cardioMinutes: usePlannedCardio ? withoutRest.plannedCardioMinutes : withoutRest.cardioMinutes,
+    cardioIntensity: usePlannedCardio ? withoutRest.plannedCardioIntensity : withoutRest.cardioIntensity,
   }, now);
 }
 
@@ -175,26 +328,38 @@ export function getRestRemainingSeconds(session: ActiveWorkoutSession, now = Dat
   return Math.max(0, Math.ceil((new Date(session.restEndsAt).getTime() - now) / 1000));
 }
 
+export function getRestElapsedSeconds(session: ActiveWorkoutSession, now = Date.now()): number {
+  const running = session.restStartedAt ? Math.max(0, Math.floor((now - new Date(session.restStartedAt).getTime()) / 1000)) : 0;
+  return Math.max(0, (session.restElapsedBeforeSeconds || 0) + running);
+}
+
 export function startRest(session: ActiveWorkoutSession, seconds: number, now = Date.now()): ActiveWorkoutSession {
   if (seconds <= 0) return session;
   return patchActiveSession(session, {
     restEndsAt: iso(now + seconds * 1000),
     restPausedSeconds: null,
+    restStartedAt: iso(now),
+    restElapsedBeforeSeconds: 0,
+    restTargetSeconds: seconds,
+    lastRestExerciseId: null,
+    lastRestSeries: null,
   }, now);
 }
 
 export function addRestSeconds(session: ActiveWorkoutSession, seconds: number, now = Date.now()): ActiveWorkoutSession {
   const remaining = getRestRemainingSeconds(session, now);
+  const nextRemaining = Math.max(0, remaining + seconds);
+  const nextTarget = Math.max(0, (session.restTargetSeconds ?? remaining) + seconds);
   if (session.restPausedSeconds !== null) {
-    return patchActiveSession(session, { restPausedSeconds: remaining + seconds }, now);
+    return patchActiveSession(session, { restPausedSeconds: nextRemaining, restTargetSeconds: nextTarget }, now);
   }
-  return patchActiveSession(session, { restEndsAt: iso(now + (remaining + seconds) * 1000) }, now);
+  return patchActiveSession(session, { restEndsAt: iso(now + nextRemaining * 1000), restTargetSeconds: nextTarget }, now);
 }
 
 export function pauseRest(session: ActiveWorkoutSession, now = Date.now()): ActiveWorkoutSession {
   const remaining = getRestRemainingSeconds(session, now);
   if (!remaining) return session;
-  return patchActiveSession(session, { restEndsAt: null, restPausedSeconds: remaining }, now);
+  return patchActiveSession(session, { restEndsAt: null, restPausedSeconds: remaining, restElapsedBeforeSeconds: getRestElapsedSeconds(session, now), restStartedAt: null }, now);
 }
 
 export function resumeRest(session: ActiveWorkoutSession, now = Date.now()): ActiveWorkoutSession {
@@ -202,11 +367,52 @@ export function resumeRest(session: ActiveWorkoutSession, now = Date.now()): Act
   return patchActiveSession(session, {
     restEndsAt: iso(now + session.restPausedSeconds * 1000),
     restPausedSeconds: null,
+    restStartedAt: iso(now),
   }, now);
 }
 
+function finishActiveRest(session: ActiveWorkoutSession, status: SeriesRestStatus, now: number): ActiveWorkoutSession {
+  const exerciseId = session.activeRestExerciseId;
+  const series = session.activeRestSeries;
+  let next = session;
+  if (exerciseId && series) {
+    next = patchSeriesPerformance(next, exerciseId, series, { actualRestSeconds: getRestElapsedSeconds(session, now), restStatus: status }, now);
+  }
+  return patchActiveSession(next, {
+    restEndsAt: null,
+    restPausedSeconds: null,
+    restStartedAt: null,
+    restElapsedBeforeSeconds: 0,
+    restTargetSeconds: null,
+    activeRestExerciseId: null,
+    activeRestSeries: null,
+    lastRestExerciseId: status === "completed" ? exerciseId : null,
+    lastRestSeries: status === "completed" ? series : null,
+  }, now);
+}
+
+export function completeRest(session: ActiveWorkoutSession, now = Date.now()): ActiveWorkoutSession {
+  const exerciseId = session.activeRestExerciseId;
+  const series = session.activeRestSeries;
+  let next = finishActiveRest(session, "completed", now);
+  if (exerciseId && series) {
+    const completed = session.completedRestSeries[exerciseId] || [];
+    next = patchActiveSession(next, {
+      completedRestSeries: {
+        ...session.completedRestSeries,
+        [exerciseId]: completed.includes(series) ? completed : [...completed, series].sort((left, right) => left - right),
+      },
+    }, now);
+  }
+  return next;
+}
+
 export function skipRest(session: ActiveWorkoutSession, now = Date.now()): ActiveWorkoutSession {
-  return patchActiveSession(session, { restEndsAt: null, restPausedSeconds: null, activeRestExerciseId: null, activeRestSeries: null }, now);
+  return finishActiveRest(session, "skipped", now);
+}
+
+export function clearRestNotice(session: ActiveWorkoutSession, now = Date.now()): ActiveWorkoutSession {
+  return patchActiveSession(session, { lastRestExerciseId: null, lastRestSeries: null }, now);
 }
 
 export type PreviousWorkoutReadiness = {
@@ -242,8 +448,23 @@ export function sessionReadiness(session: ActiveWorkoutSession, previousWorkout?
 
 export function effectiveSets(sets: number, readiness: ReturnType<typeof sessionReadiness>): number {
   if (readiness === "muito baixa") return 1;
-  if (readiness === "baixa") return Math.max(1, Math.ceil(sets * 0.7));
+  if (readiness === "baixa") return Math.max(1, Math.round(sets * 0.7));
   return sets;
+}
+
+export function isCardioEntryValid(minutesValue: string, intensity: string): boolean {
+  if (!intensity) return false;
+  if (intensity === "Sem cardio hoje") return true;
+  const minutes = Number(minutesValue);
+  return Number.isInteger(minutes) && minutes >= 1 && minutes <= 120;
+}
+
+export function isCardioPlanValid(session: Pick<ActiveWorkoutSession, "cardioMinutes" | "cardioIntensity"> & Partial<Pick<ActiveWorkoutSession, "plannedCardioMinutes" | "plannedCardioIntensity">>): boolean {
+  return isCardioEntryValid(session.plannedCardioMinutes ?? session.cardioMinutes, session.plannedCardioIntensity ?? session.cardioIntensity);
+}
+
+export function isCardioResultValid(session: Pick<ActiveWorkoutSession, "cardioMinutes" | "cardioIntensity">): boolean {
+  return isCardioEntryValid(session.cardioMinutes, session.cardioIntensity);
 }
 
 export function summarizeActiveSession(session: ActiveWorkoutSession, now = Date.now()): SessionSummary {
@@ -257,16 +478,20 @@ export function summarizeActiveSession(session: ActiveWorkoutSession, now = Date
   for (const item of items) {
     const recommendedSets = session.workout.main.includes(item) ? effectiveSets(item.sets, readiness) : item.sets;
     const sets = session.setOverrides[item.exercise.id] ?? recommendedSets;
-    const setsDone = (session.completedSeries[item.exercise.id] || []).length;
+    const performedSeries = seriesPerformances(session, item.exercise.id, sets).filter((entry) => entry.completed);
+    const setsDone = performedSeries.length;
     if (setsDone >= sets) completedExercises += 1;
-    const load = Number.parseFloat((session.loads[item.exercise.id] || "0").replace(",", "."));
-    const repetitions = Number.parseInt(session.actualReps[item.exercise.id] || "0", 10);
-    if (load > 0 && repetitions > 0 && setsDone > 0) totalVolumeKg += load * repetitions * setsDone;
-    const estimate = calculateEstimatedOneRepMax(load, repetitions);
-    if (estimate) estimatedOneRepMax = Math.max(estimatedOneRepMax, estimate);
+    for (const performed of performedSeries) {
+      const loadValue = performed.loadType === "assistencia" || performed.loadType === "peso_corporal" ? "0" : performed.loadKg;
+      const load = Number.parseFloat((loadValue || "0").replace(",", "."));
+      const repetitions = Number.parseInt(performed.repetitions || "0", 10);
+      if (load > 0 && repetitions > 0) totalVolumeKg += load * repetitions;
+      const estimate = repetitions <= 10 ? calculateEstimatedOneRepMax(load, repetitions) : 0;
+      if (estimate) estimatedOneRepMax = Math.max(estimatedOneRepMax, estimate);
+    }
   }
 
-  const rirValues = Object.values(session.rir).map(Number).filter(Number.isFinite);
+  const rirValues = Object.values(session.seriesData).flat().filter((entry) => entry.completed && entry.rir !== "").map((entry) => Number(entry.rir)).filter(Number.isFinite);
   return {
     completedExercises,
     totalExercises: items.length,

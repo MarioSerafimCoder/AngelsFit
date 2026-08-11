@@ -389,17 +389,46 @@ function safeDate(value: string | undefined) {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
+export type PostpartumSafetyAssessment = {
+  applicable: boolean;
+  eligible: boolean;
+  postpartumWeeks: number | null;
+  reasons: string[];
+};
+
+export function assessPostpartumSafety(profile: ProfileForGeneration, now = new Date()): PostpartumSafetyAssessment {
+  const codes = detectSafetyCodes(profile);
+  const applicable = codes.some((code) => ["postpartum", "cesarean"].includes(code));
+  if (!applicable) return { applicable: false, eligible: true, postpartumWeeks: null, reasons: [] };
+
+  const delivery = safeDate(profile.deliveryDate);
+  const currentDay = startOfLocalDay(now);
+  const postpartumDays = delivery ? Math.floor((currentDay.getTime() - delivery.getTime()) / 86_400_000) : null;
+  const postpartumWeeks = postpartumDays === null ? null : Math.floor(postpartumDays / 7);
+  const cesarean = codes.includes("cesarean") || /ces[aá]rea/i.test(profile.deliveryType || "");
+  const severeSymptoms = (profile.postpartumSymptoms || []).some((item) => ["bleeding", "scar_pain", "pelvic_pressure", "pelvic_pain"].includes(item));
+  const reasons: string[] = [];
+
+  if (!delivery) reasons.push("Informe a data do parto antes de gerar o programa pós-parto.");
+  else if (postpartumWeeks !== null && postpartumWeeks < 10) reasons.push("O programa estruturado começa a partir da 10ª semana pós-parto.");
+  if (!profile.medicalClearance) reasons.push("Registre a liberação de profissional habilitado antes de iniciar.");
+  if (cesarean && !profile.incisionHealed) reasons.push("Confirme que a cicatriz está fechada e sem sinais de infecção.");
+  if (severeSymptoms) reasons.push("Há sintomas de alerta registrados; procure avaliação antes de iniciar ou retomar o programa.");
+
+  return { applicable, eligible: reasons.length === 0, postpartumWeeks, reasons };
+}
+
 function postpartumProgram(profile: ProfileForGeneration, context: GenerationContext, codes: string[], now: Date, notices: string[]): GeneratedProgram | null {
   if (!codes.some((code) => ["postpartum", "cesarean"].includes(code))) return null;
   const delivery = safeDate(profile.deliveryDate);
-  const severeSymptoms = (profile.postpartumSymptoms || []).some((item) => ["bleeding", "scar_pain", "pelvic_pressure", "pelvic_pain"].includes(item));
-  const postpartumDays = delivery ? Math.max(0, Math.floor((now.getTime() - delivery.getTime()) / 86_400_000)) : 70;
+  if (!delivery) return null;
+  const postpartumDays = Math.max(0, Math.floor((now.getTime() - delivery.getTime()) / 86_400_000));
   const postpartumWeeks = Math.floor(postpartumDays / 7);
   const blockIndex = Math.min(POSTPARTUM_BLOCKS.length - 1, Math.max(0, Math.floor((postpartumWeeks - 10) / 2)));
   const requestedBlock = POSTPARTUM_BLOCKS[blockIndex];
-  const anchor = delivery || now;
-  const priorBlockStart = new Date(anchor); priorBlockStart.setDate(priorBlockStart.getDate() + (delivery ? Math.max(10, 10 + (blockIndex - 1) * 2) * 7 : -14));
-  const cycleStart = new Date(anchor); cycleStart.setDate(cycleStart.getDate() + (delivery && postpartumWeeks >= 10 ? (10 + blockIndex * 2) * 7 : 0));
+  const anchor = delivery;
+  const priorBlockStart = new Date(anchor); priorBlockStart.setDate(priorBlockStart.getDate() + Math.max(10, 10 + (blockIndex - 1) * 2) * 7);
+  const cycleStart = new Date(anchor); cycleStart.setDate(cycleStart.getDate() + (10 + blockIndex * 2) * 7);
   const cycleEnd = new Date(cycleStart); cycleEnd.setDate(cycleEnd.getDate() + 13);
   const priorHistory = (context.history || []).filter((item) => { const date = new Date(item.completedAt); return date >= priorBlockStart && date < cycleStart; });
   const currentBlockHistory = (context.history || []).filter((item) => { const date = new Date(item.completedAt); return date >= cycleStart && date <= cycleEnd && (item.status || "completed") === "completed"; });
@@ -414,17 +443,12 @@ function postpartumProgram(profile: ProfileForGeneration, context: GenerationCon
   });
   const daysRemaining = Math.max(1, Math.floor((cycleEnd.getTime() - now.getTime()) / 86_400_000) + 1);
   const blockWeek = Math.min(2, Math.max(1, Math.floor(Math.max(0, now.getTime() - cycleStart.getTime()) / (7 * 86_400_000)) + 1));
-  const progressionNote = review.action === "regress" ? "Sintomas relevantes foram registrados; o bloco foi reduzido e não deve progredir até a resposta voltar ao nível habitual." : review.action === "simplify" ? "O volume foi reduzido para recuperar aderência; liberação e sintomas registrados não bloqueiam a próxima sessão." : review.action === "progress" ? block.secondWeekRule : block.objective;
-  const informationalNotices = [
-    !delivery ? "Data do parto não informada: o bloco inicial permanece disponível e pode ser ajustado no perfil." : "",
-    !profile.medicalClearance ? "Liberação profissional não marcada: informação registrada sem bloquear o programa." : "",
-    !profile.incisionHealed ? "Situação da cicatriz não confirmada: informação registrada sem bloquear os treinos." : "",
-    severeSymptoms ? "Há sintomas importantes registrados. O treino continua acessível; considere reduzir o esforço e buscar avaliação profissional." : "",
-  ].filter(Boolean);
+  const progressionNote = review.action === "regress" ? "Sintomas relevantes foram registrados; o bloco foi reduzido e não deve progredir até a resposta voltar ao nível habitual." : review.action === "simplify" ? "O volume foi reduzido para recuperar aderência antes de progredir." : review.action === "progress" ? block.secondWeekRule : block.objective;
+  const programLabel = codes.includes("cesarean") || /ces[aá]rea/i.test(profile.deliveryType || "") ? "Pós-cesárea" : "Pós-parto";
   return {
-    databaseVersion: EXERCISE_DATABASE_VERSION, status: "ready", title: `Pós-cesárea · bloco ${block.block}`, summary: `${delivery ? `Semana ${postpartumWeeks}` : "Bloco inicial"} pós-parto · ciclo de 14 dias, no máximo ${block.strengthDays} dias de força por semana.`, split: block.sessions.map((session) => session.name).join(" · "), workouts, safetyCodes: codes,
-    notices: [...informationalNotices, ...notices, "Liberação e sintomas podem ser atualizados a qualquer momento e não bloqueiam o acesso ao treino."], cycleNumber: block.block, validFrom: toDateKey(cycleStart), validUntil: toDateKey(cycleEnd), daysRemaining, todayWorkoutIndex: recommendedWorkoutIndex(context.history || [], workouts.length),
-    progressionNote, effectiveExperience: "Iniciante", recoveryClass: "Baixa", effectiveDays: block.totalDays, specialPhase: `${delivery ? `Semana ${postpartumWeeks}` : "Fase inicial"} pós-parto · ${block.rpe}`,
+    databaseVersion: EXERCISE_DATABASE_VERSION, status: "ready", title: `${programLabel} · bloco ${block.block}`, summary: `Semana ${postpartumWeeks} pós-parto · ciclo de 14 dias, no máximo ${block.strengthDays} dias de força por semana.`, split: block.sessions.map((session) => session.name).join(" · "), workouts, safetyCodes: codes,
+    notices, cycleNumber: block.block, validFrom: toDateKey(cycleStart), validUntil: toDateKey(cycleEnd), daysRemaining, todayWorkoutIndex: recommendedWorkoutIndex(context.history || [], workouts.length),
+    progressionNote, effectiveExperience: "Iniciante", recoveryClass: "Baixa", effectiveDays: block.totalDays, specialPhase: `Semana ${postpartumWeeks} pós-parto · ${block.rpe}`,
     recommendationReason: "O próximo treino segue a ordem das sessões concluídas, mesmo quando um dia planejado é perdido.",
     periodization: {
       track: "clinical", model: "Blocos pós-parto por critérios", cycleNumber: block.block, cycleLengthWeeks: 2, cycleWeek: blockWeek,
@@ -453,11 +477,9 @@ export function generateProgram(profile: ProfileForGeneration, context: Generati
   const recoveryClass = classifyRecovery(profile, codes, context.history);
   const effectiveDays = effectiveFrequency(profile, effectiveExperience, recoveryClass);
   const effectiveProfile = { ...profile, experience: effectiveExperience };
-  const clearanceRequired = codes.includes("red_flag") || codes.includes("pregnancy") || ((codes.includes("postpartum") || codes.includes("cesarean") || codes.includes("cardiovascular")) && !profile.medicalClearance);
+  const postpartumSafety = assessPostpartumSafety(profile, now);
+  const clearanceRequired = codes.includes("red_flag") || codes.includes("pregnancy") || (codes.includes("cardiovascular") && !profile.medicalClearance) || !postpartumSafety.eligible;
   const notices = safetyNotices(codes);
-  const specialProgram = postpartumProgram(profile, context, codes, now, notices);
-  if (specialProgram) return specialProgram;
-  const periodization = buildPeriodizationPlan({ goal: profile.goal, safetyCodes: codes, history: context.history || [], sessionsPerWeek: effectiveDays });
   if (clearanceRequired) {
     return {
       databaseVersion: EXERCISE_DATABASE_VERSION,
@@ -467,7 +489,7 @@ export function generateProgram(profile: ProfileForGeneration, context: Generati
       split: "Pausado por segurança",
       workouts: [],
       safetyCodes: codes,
-      notices: ["Procure liberação de profissional habilitado antes de iniciar.", ...notices],
+      notices: [...postpartumSafety.reasons, ...(postpartumSafety.reasons.length ? [] : ["Procure liberação de profissional habilitado antes de iniciar."]), ...notices],
       cycleNumber: cycleIndex + 1,
       validFrom: toDateKey(cycleStart),
       validUntil: toDateKey(cycleEnd),
@@ -479,6 +501,10 @@ export function generateProgram(profile: ProfileForGeneration, context: Generati
       effectiveDays: 0,
     };
   }
+
+  const specialProgram = postpartumProgram(profile, context, codes, now, notices);
+  if (specialProgram) return specialProgram;
+  const periodization = buildPeriodizationPlan({ goal: profile.goal, safetyCodes: codes, history: context.history || [], sessionsPerWeek: effectiveDays });
 
   const avoidCodes = safetyAvoidCodes(codes);
   const lowImpact = codes.some((code) => ["postpartum", "cesarean", "pregnancy", "knee", "back", "balance", "low_impact", "cardiovascular"].includes(code));

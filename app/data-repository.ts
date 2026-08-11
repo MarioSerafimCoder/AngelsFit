@@ -1,4 +1,4 @@
-export const DATA_SCHEMA_VERSION = 4;
+export const DATA_SCHEMA_VERSION = 5;
 
 export const CRITICAL_STORAGE_KEYS = {
   profile: "fitlocal.profile.v1",
@@ -97,7 +97,7 @@ export function isValidCheckIns(value: unknown): boolean {
 
 export function isValidActiveSession(value: unknown): boolean {
   return isObject(value)
-    && value.schemaVersion === 1
+    && (value.schemaVersion === 1 || value.schemaVersion === 2)
     && isString(value.id)
     && isString(value.status)
     && isString(value.createdAt)
