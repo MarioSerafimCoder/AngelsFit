@@ -58,9 +58,14 @@ test("adherence separates completed, partial and skipped sessions", () => {
 test("a session with no completed movement is not reported as completed", () => {
   const empty = record("empty", "2026-08-05", "completed", { completedExercises: 0, totalExercises: 10 });
   const short = record("short", "2026-08-05", "completed", { completedExercises: 4, totalExercises: 10 });
+  const half = record("half", "2026-08-05", "completed", { completedExercises: 5, totalExercises: 10, completionPercentage: 50 });
+  const valid = record("valid", "2026-08-05", "completed", { completedExercises: 4, totalExercises: 10, completionPercentage: 60 });
   assert.equal(normalizedTrainingStatus(empty), "interrupted");
   assert.equal(normalizedTrainingStatus(short), "partial");
+  assert.equal(normalizedTrainingStatus(half), "partial");
+  assert.equal(normalizedTrainingStatus(valid), "completed");
   assert.equal(recommendedWorkoutIndex([short], workouts.length), 0);
+  assert.equal(recommendedWorkoutIndex([valid], workouts.length), 1);
 });
 
 test("weekly muscle volume compares performed sets with the current plan", () => {

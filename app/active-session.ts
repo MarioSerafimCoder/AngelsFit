@@ -506,3 +506,21 @@ export function summarizeActiveSession(session: ActiveWorkoutSession, now = Date
     symptoms: [...new Set([...session.postSymptoms, ...session.painEvents.map((event) => `${event.region} (${event.intensity}/10)`)])],
   };
 }
+
+export function sessionCompletionProgress(session: ActiveWorkoutSession): { completedSeries: number; totalSeries: number; percentage: number; moreThanHalf: boolean } {
+  session = normalizeActiveWorkoutSession(session);
+  const items = [...session.workout.warmup, ...session.workout.main, ...session.workout.cooldown];
+  const readiness = sessionReadiness(session);
+  let completedSeries = 0;
+  let totalSeries = 0;
+
+  for (const item of items) {
+    const recommendedSets = session.workout.main.includes(item) ? effectiveSets(item.sets, readiness) : item.sets;
+    const sets = session.setOverrides[item.exercise.id] ?? recommendedSets;
+    totalSeries += sets;
+    completedSeries += seriesPerformances(session, item.exercise.id, sets).filter((entry) => entry.completed).length;
+  }
+
+  const percentage = totalSeries ? Math.round((completedSeries / totalSeries) * 100) : 0;
+  return { completedSeries, totalSeries, percentage, moreThanHalf: totalSeries > 0 && completedSeries / totalSeries > 0.5 };
+}

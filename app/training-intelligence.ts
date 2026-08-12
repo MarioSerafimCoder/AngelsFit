@@ -49,6 +49,7 @@ export type TrainingHistoryLike = {
   durationMinutes?: number;
   completedExercises?: number;
   totalExercises?: number;
+  completionPercentage?: number;
   sessionRpe?: number;
   averageRir?: number;
   painScore?: number;
@@ -147,10 +148,13 @@ function startOfDay(date: Date): Date {
 export function normalizedTrainingStatus(item: TrainingHistoryLike): TrainingSessionStatus {
   const storedStatus = item.status || "completed";
   if (storedStatus !== "completed") return storedStatus;
-  if (!item.totalExercises) return storedStatus;
-  const completion = (item.completedExercises || 0) / item.totalExercises;
+  const completion = typeof item.completionPercentage === "number"
+    ? item.completionPercentage / 100
+    : item.totalExercises
+      ? (item.completedExercises || 0) / item.totalExercises
+      : 1;
   if (completion <= 0) return "interrupted";
-  if (completion < 0.7) return "partial";
+  if (completion <= 0.5) return "partial";
   return "completed";
 }
 
@@ -167,7 +171,8 @@ export function trainingStatusLabel(item: TrainingHistoryLike): string {
 }
 
 export function isAttendedTrainingSession(item: TrainingHistoryLike): boolean {
-  return ["completed", "partial", "interrupted", "repeated"].includes(normalizedTrainingStatus(item)) && (item.completedExercises || 0) > 0;
+  const hasProgress = typeof item.completionPercentage === "number" ? item.completionPercentage > 0 : (item.completedExercises || 0) > 0;
+  return ["completed", "partial", "interrupted", "repeated"].includes(normalizedTrainingStatus(item)) && hasProgress;
 }
 
 export function sequenceAdvanceFor(item: TrainingHistoryLike): number {

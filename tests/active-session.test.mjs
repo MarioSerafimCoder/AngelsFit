@@ -15,6 +15,7 @@ import {
   patchActiveSession,
   resumeRest,
   seriesPerformances,
+  sessionCompletionProgress,
   sessionReadiness,
   startRest,
   summarizeActiveSession,
@@ -204,4 +205,14 @@ test("uses the adjusted set recommendation and restores new rest progress fields
   assert.deepEqual(normalized.completedRestSeries, {});
   assert.equal(normalized.activeRestExerciseId, null);
   assert.equal(summary.completedExercises, 2);
+});
+
+test("qualifies attendance only after more than half of the planned series", () => {
+  let session = beginActiveSession(createActiveWorkoutSession(workout, 0), 1_000);
+  session = completeSeriesPerformance(session, "warmup", 1, {}, 2_000);
+  session = completeSeriesPerformance(session, "squat", 1, {}, 3_000);
+  assert.deepEqual(sessionCompletionProgress(session), { completedSeries: 2, totalSeries: 4, percentage: 50, moreThanHalf: false });
+
+  session = completeSeriesPerformance(session, "squat", 2, {}, 4_000);
+  assert.deepEqual(sessionCompletionProgress(session), { completedSeries: 3, totalSeries: 4, percentage: 75, moreThanHalf: true });
 });

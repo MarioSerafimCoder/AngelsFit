@@ -57,6 +57,9 @@ test("includes check-in, sequence calendar and protected interaction flows", asy
   assert.match(app, /Duração do cardio/);
   assert.match(app, /CHECK-IN DE PRONTIDÃO/);
   assert.match(app, /RESPOSTA DE 24 HORAS/);
+  assert.match(app, /Encerrar treino/);
+  assert.match(app, /últimos 4/);
+  assert.match(app, /profile-backup-card/);
   assert.match(app, /RIR da série/);
   assert.match(app, /label="Progresso"/);
   assert.doesNotMatch(app, /label="Histórico"/);
