@@ -1,4 +1,8 @@
 import type { GeneratedWorkout } from "./workout-engine";
+import type { PainEvent } from "./training-intelligence.ts";
+import { isPoorRecovery } from "./domain/recovery.ts";
+import { normalizeSubstitutionReason, type SubstitutionReason } from "./domain/substitution-reason.ts";
+import type { ReadinessLevel } from "./domain/types.ts";
 
 function calculateEstimatedOneRepMax(loadKg: number, repetitions: number): number {
   if (!Number.isFinite(loadKg) || !Number.isFinite(repetitions) || loadKg <= 0 || repetitions <= 0) return 0;
@@ -6,6 +10,8 @@ function calculateEstimatedOneRepMax(loadKg: number, repetitions: number): numbe
 }
 
 export type SessionStatus = "setup" | "active" | "feedback";
+export type SessionReadiness = "attention" | "very_low" | "low" | "normal" | "high";
+export type CardioIntensity = "none" | "light" | "moderate" | "vigorous";
 
 export type SeriesLoadType = "carga" | "peso_corporal" | "assistencia" | "lastro";
 export type SeriesRestStatus = "completed" | "skipped";
@@ -27,7 +33,7 @@ export type SeriesPerformance = {
 };
 
 export type ActiveWorkoutSession = {
-  schemaVersion: 2;
+  schemaVersion: 2 | 3;
   id: string;
   workout: GeneratedWorkout;
   plannedDate: string;
@@ -50,8 +56,8 @@ export type ActiveWorkoutSession = {
   /** @deprecated Preserved only when an older saved session contains notes. */
   notes?: Record<string, string>;
   exerciseOverrides: Record<string, string>;
-  substitutions: Array<{ fromExerciseId: string; toExerciseId: string; reason: string; changedAt: string }>;
-  painEvents: Array<{ exerciseId: string; region: string; intensity: number; recordedAt: string }>;
+  substitutions: Array<{ fromExerciseId: string; toExerciseId: string; reason: SubstitutionReason; changedAt: string }>;
+  painEvents: PainEvent[];
   restEndsAt: string | null;
   restPausedSeconds: number | null;
   restStartedAt: string | null;
@@ -68,9 +74,9 @@ export type ActiveWorkoutSession = {
   newPain: boolean;
   postpartumAlert: boolean;
   plannedCardioMinutes: string;
-  plannedCardioIntensity: string;
+  plannedCardioIntensity: CardioIntensity;
   cardioMinutes: string;
-  cardioIntensity: string;
+  cardioIntensity: CardioIntensity;
   sessionRpe: string;
   painAfter: string;
   postSymptoms: string[];
@@ -83,7 +89,7 @@ export type SessionSummary = {
   totalVolumeKg: number;
   estimatedOneRepMax: number;
   cardioMinutes: number;
-  cardioIntensity: string;
+  cardioIntensity: CardioIntensity;
   sessionRpe?: number;
   averageRir?: number;
   painScore?: number;
@@ -99,10 +105,19 @@ function sessionId(now: number): string {
   return randomId ?? `${now}-${Math.random().toString(36).slice(2)}`;
 }
 
+export function normalizeCardioIntensity(value: unknown): CardioIntensity {
+  if (value === "light" || value === "moderate" || value === "vigorous" || value === "none") return value;
+  const normalized = String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("pt-BR");
+  if (normalized === "leve") return "light";
+  if (normalized === "moderada" || normalized === "moderado") return "moderate";
+  if (normalized === "intensa" || normalized === "intenso") return "vigorous";
+  return "none";
+}
+
 export function createActiveWorkoutSession(workout: GeneratedWorkout, now = Date.now(), options: Partial<Pick<ActiveWorkoutSession, "plannedDate" | "sequenceNumber" | "sequenceAdvance" | "sequenceAction">> = {}): ActiveWorkoutSession {
   const timestamp = iso(now);
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     id: sessionId(now),
     workout,
     plannedDate: options.plannedDate || timestamp.slice(0, 10),
@@ -141,9 +156,9 @@ export function createActiveWorkoutSession(workout: GeneratedWorkout, now = Date
     newPain: false,
     postpartumAlert: false,
     plannedCardioMinutes: "",
-    plannedCardioIntensity: "Sem cardio hoje",
+    plannedCardioIntensity: "none",
     cardioMinutes: "",
-    cardioIntensity: "Sem cardio hoje",
+    cardioIntensity: "none",
     sessionRpe: "",
     painAfter: "",
     postSymptoms: [],
@@ -242,7 +257,7 @@ export function normalizeActiveWorkoutSession(session: ActiveWorkoutSession): Ac
   const setupOrActive = session.status === "setup" || session.status === "active";
   return {
     ...session,
-    schemaVersion: 2,
+    schemaVersion: 3,
     plannedDate: session.plannedDate || session.createdAt.slice(0, 10),
     sequenceNumber: session.sequenceNumber || 1,
     sequenceAdvance: session.sequenceAdvance ?? 1,
@@ -256,13 +271,13 @@ export function normalizeActiveWorkoutSession(session: ActiveWorkoutSession): Ac
     rir: session.rir || {},
     ...(session.notes ? { notes: session.notes } : {}),
     exerciseOverrides: session.exerciseOverrides || {},
-    substitutions: session.substitutions || [],
+    substitutions: (session.substitutions || []).map((substitution) => ({ ...substitution, reason: normalizeSubstitutionReason(substitution.reason) })),
     painEvents: session.painEvents || [],
     postSymptoms: session.postSymptoms || [],
     cardioMinutes: session.cardioMinutes || "",
-    cardioIntensity: session.cardioIntensity || "Sem cardio hoje",
+    cardioIntensity: normalizeCardioIntensity(session.cardioIntensity),
     plannedCardioMinutes: session.plannedCardioMinutes ?? (setupOrActive ? session.cardioMinutes || "" : ""),
-    plannedCardioIntensity: session.plannedCardioIntensity || (setupOrActive ? session.cardioIntensity || "Sem cardio hoje" : "Sem cardio hoje"),
+    plannedCardioIntensity: normalizeCardioIntensity(session.plannedCardioIntensity || (setupOrActive ? session.cardioIntensity : "none")),
     restStartedAt: session.restStartedAt || null,
     restElapsedBeforeSeconds: session.restElapsedBeforeSeconds || 0,
     restTargetSeconds: session.restTargetSeconds ?? null,
@@ -281,10 +296,10 @@ export function patchActiveSession(
   return { ...session, ...patch, updatedAt: iso(now) };
 }
 
-export function beginActiveSession(session: ActiveWorkoutSession, now = Date.now(), previousWorkout?: PreviousWorkoutReadiness): ActiveWorkoutSession {
+export function beginActiveSession(session: ActiveWorkoutSession, now = Date.now(), previousWorkout?: PreviousWorkoutReadiness, passiveReadiness: ReadinessLevel = "unknown"): ActiveWorkoutSession {
   if (session.status !== "setup") return session;
-  const readiness = sessionReadiness(session, previousWorkout);
-  if (readiness === "atenção") return session;
+  const readiness = sessionReadiness(session, previousWorkout, passiveReadiness);
+  if (readiness === "attention") return session;
 
   const setOverrides = { ...session.setOverrides };
   for (const item of session.workout.main) {
@@ -305,7 +320,7 @@ export function getElapsedSeconds(session: ActiveWorkoutSession, now = Date.now(
 
 export function enterFeedback(session: ActiveWorkoutSession, now = Date.now()): ActiveWorkoutSession {
   const withoutRest = session.activeRestExerciseId ? skipRest(session, now) : session;
-  const usePlannedCardio = withoutRest.cardioIntensity === "Sem cardio hoje" && withoutRest.cardioMinutes === "";
+  const usePlannedCardio = withoutRest.cardioIntensity === "none" && withoutRest.cardioMinutes === "";
   return patchActiveSession(withoutRest, {
     status: "feedback",
     elapsedBeforeSeconds: getElapsedSeconds(session, now),
@@ -423,7 +438,7 @@ export type PreviousWorkoutReadiness = {
   recovery24h?: string;
 };
 
-export function sessionReadiness(session: ActiveWorkoutSession, previousWorkout?: PreviousWorkoutReadiness): "atenção" | "muito baixa" | "baixa" | "moderada" | "alta" {
+export function sessionReadiness(session: ActiveWorkoutSession, previousWorkout?: PreviousWorkoutReadiness, passiveReadiness: ReadinessLevel = "unknown"): SessionReadiness {
   const sleep = session.sleepLastNight === "" ? null : Number(session.sleepLastNight);
   const energy = session.energy === "" ? null : Number(session.energy);
   const stress = session.stress === "" ? null : Number(session.stress);
@@ -433,28 +448,29 @@ export function sessionReadiness(session: ActiveWorkoutSession, previousWorkout?
       + ((previousWorkout.sessionRpe || 0) >= 9 ? 2 : (previousWorkout.sessionRpe || 0) >= 8 ? 1 : 0)
       + ((previousWorkout.painScore || 0) >= 4 ? 2 : (previousWorkout.painScore || 0) >= 2 ? 1 : 0)
       + ((previousWorkout.symptoms?.length || 0) > 0 ? 2 : 0)
-      + (/ruim|não recuper|dolor/i.test(previousWorkout.recovery24h || "") ? 2 : 0);
+      + (isPoorRecovery(previousWorkout.recovery24h) ? 2 : 0);
+  const passivePenalty = passiveReadiness === "low" ? 2 : 0;
   const penalty = (sleep !== null && sleep < 6 ? 2 : sleep !== null && sleep < 7 ? 1 : 0)
     + (energy !== null && energy <= 2 ? 2 : energy === 3 ? 1 : 0)
     + (stress !== null && stress >= 4 ? 2 : stress === 3 ? 1 : 0)
     + (pain !== null && pain >= 4 ? 2 : pain !== null && pain >= 2 ? 1 : 0)
-    + previousPenalty;
-  if (session.newPain || session.postpartumAlert || (pain !== null && pain >= 7) || (previousWorkout?.painScore || 0) >= 7) return "atenção";
-  if (penalty >= 6) return "muito baixa";
-  if (penalty >= 4) return "baixa";
-  if (penalty >= 2) return "moderada";
-  return "alta";
+    + previousPenalty
+    + passivePenalty;
+  if (session.newPain || session.postpartumAlert || (pain !== null && pain >= 7) || (previousWorkout?.painScore || 0) >= 7) return "attention";
+  if (penalty >= 6) return "very_low";
+  if (penalty >= 4) return "low";
+  if (penalty >= 2) return "normal";
+  return passiveReadiness === "normal" ? "normal" : "high";
 }
 
 export function effectiveSets(sets: number, readiness: ReturnType<typeof sessionReadiness>): number {
-  if (readiness === "muito baixa") return 1;
-  if (readiness === "baixa") return Math.max(1, Math.round(sets * 0.7));
+  if (readiness === "very_low") return 1;
+  if (readiness === "low") return Math.max(1, Math.round(sets * 0.7));
   return sets;
 }
 
-export function isCardioEntryValid(minutesValue: string, intensity: string): boolean {
-  if (!intensity) return false;
-  if (intensity === "Sem cardio hoje") return true;
+export function isCardioEntryValid(minutesValue: string, intensity: CardioIntensity): boolean {
+  if (intensity === "none") return true;
   const minutes = Number(minutesValue);
   return Number.isInteger(minutes) && minutes >= 1 && minutes <= 120;
 }

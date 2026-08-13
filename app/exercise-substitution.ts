@@ -41,7 +41,8 @@ export function rankExerciseSubstitutions(options: {
   });
   const avoidCodes = new Set([...expandedSafetyCodes, ...(painCode ? [painCode] : [])]);
   const painfulIds = new Set(options.previouslyPainfulExerciseIds || []);
-  const equipmentUnavailable = normalized(options.reason || "").includes("equipamento indisponivel");
+  const equipmentUnavailable = options.reason === "equipment_unavailable" || normalized(options.reason || "").includes("equipamento indisponivel");
+  const painReason = options.reason === "pain" || normalized(options.reason || "").includes("dor");
   const currentPrimary = normalized(options.current.primaryGroup || options.current.muscleGroups[0] || "");
 
   return options.candidates
@@ -56,7 +57,9 @@ export function rankExerciseSubstitutions(options: {
       const sameMovement = candidate.movement === options.current.movement;
       const samePrimaryGroup = normalized(candidate.primaryGroup || candidate.muscleGroups[0] || "") === currentPrimary;
       const complexityDistance = Math.abs((candidate.complexity || 1) - (options.current.complexity || 1));
-      const score = (declaredAlternative ? 70 : 0) + (sameMovement ? 45 : 0) + (samePrimaryGroup ? 30 : 0) - complexityDistance * 5;
+      const secondaryOverlap = candidate.muscleGroups.filter((group) => options.current.muscleGroups.includes(group)).length;
+      const impactImprovement = painReason && candidate.impact === "baixo" ? 12 : 0;
+      const score = (declaredAlternative ? 70 : 0) + (sameMovement ? 45 : 0) + (samePrimaryGroup ? 30 : 0) + secondaryOverlap * 5 + impactImprovement - complexityDistance * (painReason ? 8 : 5);
       const reasons = [sameMovement ? "mesmo movimento" : "movimento compatível", samePrimaryGroup ? "mesmo grupo muscular" : "grupo complementar", `${candidate.level.toLocaleLowerCase("pt-BR")}`];
       if (equipmentUnavailable) reasons.push("outro equipamento");
       if (painCode) reasons.push("sem a restrição registrada");

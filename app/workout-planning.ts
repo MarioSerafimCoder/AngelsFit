@@ -42,10 +42,12 @@ export function estimateWorkoutMinutes(sections: WorkoutSections): number {
 export function fitWorkoutToTime(options: WorkoutSections & { targetMinutes: number; minimumMainExercises?: number }): WorkoutSections & { estimatedMinutes: number } {
   const targetSeconds = Math.max(15, options.targetMinutes) * 60;
   const minimumMain = Math.min(options.main.length, Math.max(2, options.minimumMainExercises || 3));
-  const selectedMain = options.main.slice(0, minimumMain);
+  const priorityRank = { A: 0, B: 1, C: 2 } as const;
+  const orderedMain = options.main.map((item, index) => ({ item, index })).sort((left, right) => priorityRank[left.item.priority || "B"] - priorityRank[right.item.priority || "B"] || left.index - right.index).map(({ item }) => item);
+  const selectedMain = orderedMain.slice(0, minimumMain);
   let currentSeconds = [...options.warmup, ...selectedMain, ...options.cooldown].reduce((total, item) => total + estimateExerciseSeconds(item), 0);
 
-  for (const item of options.main.slice(minimumMain)) {
+  for (const item of orderedMain.slice(minimumMain)) {
     const nextSeconds = estimateExerciseSeconds(item);
     if (currentSeconds + nextSeconds > targetSeconds * 1.03) break;
     selectedMain.push(item);

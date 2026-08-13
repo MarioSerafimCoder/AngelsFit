@@ -28,6 +28,13 @@ test("2026-08-06 is Thursday and future dates cross boundaries correctly", () =>
   assert.equal(calendar[4].workout?.name, "Treino C");
 });
 
+test("does not force today into the schedule when today is a rest day", () => {
+  const calendar = buildCalendarSchedule({ startDate: new Date(2026, 7, 13, 12), days: 2, availableDays: ["Sex"], workouts, recommendedIndex: 0 });
+  assert.equal(calendar[0].weekdayShort, "Qui");
+  assert.equal(calendar[0].workout, null);
+  assert.equal(calendar[1].workout?.name, "Treino A");
+});
+
 test("missing the planned date keeps the same recommended workout", () => {
   const history = [record("A", "2026-08-01")];
   assert.equal(recommendedWorkoutIndex(history, workouts.length), 1);

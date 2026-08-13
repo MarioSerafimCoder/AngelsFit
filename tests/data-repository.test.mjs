@@ -39,6 +39,14 @@ class MemoryMirror {
   }
 }
 
+class DelayedMirror extends MemoryMirror {
+  async set(key, value) {
+    const payload = JSON.parse(value).payload;
+    await new Promise((resolve) => setTimeout(resolve, payload.includes('"id":"old"') ? 25 : 1));
+    this.values.set(key, value);
+  }
+}
+
 class FailOnceStorage extends MemoryStorage {
   failKey = null;
   failed = false;
@@ -190,4 +198,17 @@ test("removes a completed active session from both stores", async () => {
 
   assert.equal(primary.getItem(CRITICAL_STORAGE_KEYS.activeSession), null);
   assert.equal(await mirror.get(CRITICAL_STORAGE_KEYS.activeSession), null);
+});
+
+test("serializes mirror mutations so an older write cannot win a race", async () => {
+  const primary = new MemoryStorage();
+  const mirror = new DelayedMirror();
+  const repository = new CriticalDataRepository(primary, mirror);
+  const oldHistory = [{ id: "old", workoutName: "A", completedAt: "2026-08-01T12:00:00.000Z" }];
+  const freshHistory = [{ id: "fresh", workoutName: "A", completedAt: "2026-08-02T12:00:00.000Z" }];
+
+  await Promise.all([repository.write("history", oldHistory), repository.write("history", freshHistory)]);
+
+  assert.deepEqual(JSON.parse(primary.getItem(CRITICAL_STORAGE_KEYS.history)), freshHistory);
+  assert.deepEqual(JSON.parse(JSON.parse(await mirror.get(CRITICAL_STORAGE_KEYS.history)).payload), freshHistory);
 });

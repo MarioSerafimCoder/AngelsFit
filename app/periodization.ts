@@ -13,7 +13,7 @@ export type PeriodizationHistory = {
     setsCompleted: number;
     repetitions: number;
     load: number;
-    rirOrRpe: number;
+    rirOrRpe?: number;
     executionFeedback: "adequate" | "limited" | "unknown";
     painReported: boolean;
   }>;
@@ -130,7 +130,7 @@ export function isQualifiedPeriodizationSession(item: PeriodizationHistory) {
     && (item.painScore || 0) < 4
     && (item.symptoms?.length || 0) === 0
     && (item.sessionRpe || 0) <= 9
-    && !/piorou|muito cansad/i.test(item.recovery24h || "");
+    && !isPoorRecovery(item.recovery24h);
 }
 
 export function periodizationTrack(goal: string, safetyCodes: string[]): PeriodizationTrack {
@@ -150,7 +150,7 @@ function recentFatigueDecision(history: PeriodizationHistory[], track: Periodiza
   if (["clinical", "pregnancy"].includes(track) && (recent[0]?.painScore || 0) >= 4) return { decision: "regress", reason: "A resposta mais recente saiu da faixa estável; reduza uma variável e reavalie antes de progredir." };
   const highRpe = recent.filter((item) => (item.sessionRpe || 0) >= 9).length;
   const pain = recent.filter((item) => (item.painScore || 0) >= 4).length;
-  const poorRecovery = recent.filter((item) => /piorou|muito cansad/i.test(item.recovery24h || "")).length;
+  const poorRecovery = recent.filter((item) => isPoorRecovery(item.recovery24h)).length;
   const lowCompletion = recent.filter((item) => item.totalExercises && (item.completedExercises || 0) / item.totalExercises < 0.7).length;
   const limitedTechnique = recent.filter((item) => (item.exerciseRecords || []).filter((record) => record.executionFeedback === "limited").length >= 2).length;
   const performance = recent.map((item) => (item.exerciseRecords || []).reduce((sum, record) => sum + record.setsCompleted * Math.max(1, record.repetitions) * Math.max(1, record.load), 0));
@@ -244,7 +244,7 @@ export function exerciseProgressionGuidance(options: { history: PeriodizationHis
   const sameLoad = lastTwo.length === 2 && lastTwo[0].load > 0 && lastTwo[0].load === lastTwo[1].load;
   const earned = sameLoad && lastTwo.every((item) => item.setsCompleted >= item.setsPlanned
     && item.repetitions >= options.upperRepetitionTarget
-    && item.rirOrRpe >= 1
+    && typeof item.rirOrRpe === "number" && item.rirOrRpe >= 1
     && item.executionFeedback === "adequate"
     && !item.painReported);
   if (earned) {
@@ -265,3 +265,4 @@ export function upperRepetitionTarget(value: string) {
   const numbers = value.match(/\d+/g)?.map(Number) || [];
   return numbers.length ? Math.max(...numbers) : 0;
 }
+import { isPoorRecovery } from "./domain/recovery.ts";

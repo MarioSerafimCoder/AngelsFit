@@ -55,8 +55,8 @@ test("includes automatic attendance, free workout flow and protected data flows"
   assert.match(app, /Aquecimento e mobilidade/);
   assert.match(app, /Encerramento e alongamento/);
   assert.match(app, /Concluir série \{selectedSeries\} de \{current.sets\}/);
-  assert.match(app, /Ir para qualquer exercício/);
-  assert.match(app, /RESPOSTA DE 24 HORAS/);
+  assert.match(app, /exercise-list-title/);
+  assert.match(app, /RECUPERAÇÃO 24H/);
   assert.match(app, /Encerrar treino/);
   assert.match(app, /últimos 4/);
   assert.match(app, /profile-backup-card/);

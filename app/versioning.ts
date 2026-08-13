@@ -3,8 +3,8 @@ import { normalizeActiveWorkoutSession, type ActiveWorkoutSession } from "./acti
 import { mergeLegacyCheckIns, migrateTrainingHistory, type TrainingHistoryLike } from "./training-intelligence.ts";
 
 export const APP_VERSION = "1.0";
-export const CONTENT_VERSION = "2026.08.13.2";
-export const CURRENT_DATA_SCHEMA_VERSION = 6;
+export const CONTENT_VERSION = "2026.08.13.4";
+export const CURRENT_DATA_SCHEMA_VERSION = 8;
 export const MINIMUM_SUPPORTED_APP_VERSION = "1.0";
 
 export const DATA_SCHEMA_VERSION_KEY = "angelsfit.data-schema-version";
@@ -72,6 +72,33 @@ const migrations: Record<number, Migration> = {
     const checkIns = JSON.parse(storage.getItem(checkInsKey) || "[]") as Array<{ id?: string; checkedAt?: string }>;
     storage.setItem(historyKey, JSON.stringify(mergeLegacyCheckIns(migrateTrainingHistory(history), checkIns)));
     storage.setItem("angelsfit.migration.6", "complete");
+  },
+  7: (storage) => {
+    if (storage.getItem("angelsfit.migration.7") !== null) return;
+    const historyKey = "brasafit.history.v2";
+    const rawHistory = storage.getItem(historyKey);
+    if (rawHistory !== null) {
+      const parsed: unknown = JSON.parse(rawHistory);
+      if (!Array.isArray(parsed)) throw new Error("Workout history is not an array");
+      storage.setItem(historyKey, JSON.stringify(migrateTrainingHistory(parsed as TrainingHistoryLike[])));
+    }
+    storage.setItem("angelsfit.migration.7", "complete");
+  },
+  8: (storage) => {
+    if (storage.getItem("angelsfit.migration.8") !== null) return;
+    const historyKey = "brasafit.history.v2";
+    const rawHistory = storage.getItem(historyKey);
+    if (rawHistory !== null) {
+      const parsed = JSON.parse(rawHistory) as TrainingHistoryLike[];
+      storage.setItem(historyKey, JSON.stringify(migrateTrainingHistory(parsed)));
+    }
+    const activeSessionKey = "angelsfit.active-session.v1";
+    const rawSession = storage.getItem(activeSessionKey);
+    if (rawSession !== null) {
+      const parsed = JSON.parse(rawSession) as ActiveWorkoutSession;
+      storage.setItem(activeSessionKey, JSON.stringify(normalizeActiveWorkoutSession(parsed)));
+    }
+    storage.setItem("angelsfit.migration.8", "complete");
   },
 };
 

@@ -6,7 +6,7 @@ import {
   isValidProfile,
 } from "./data-repository.ts";
 
-export const BACKUP_FORMAT_VERSION = 9;
+export const BACKUP_FORMAT_VERSION = 11;
 export const MAX_BACKUP_FILE_SIZE = 10 * 1024 * 1024;
 
 const COMPATIBLE_APP_NAMES = new Set(["AngelsFit", "Angels Fit", "BrasaFit", "FitLocal"]);

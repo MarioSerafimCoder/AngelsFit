@@ -15,7 +15,7 @@ import { mergeLegacyCheckIns } from "../app/training-intelligence.ts";
 const record = (index, extra = {}) => ({
   id: String(index), workoutName: "Treino A", completedAt: new Date(Date.UTC(2026, 6, 1 + index * 3, 12)).toISOString(),
   status: "completed", durationMinutes: 42, completedExercises: 6, totalExercises: 6, sessionRpe: 7, painScore: 0, recovery24h: "Igual",
-  exerciseRecords: [{ exerciseId: "leg_press", setsPlanned: 3, setsCompleted: 3, repetitions: 12, load: 50, rirOrRpe: 2, restTime: 90, technique: "padrão", executionFeedback: "adequate", painReported: false }],
+  exerciseRecords: [{ exerciseId: "leg_press", setsPlanned: 3, setsCompleted: 3, repetitions: 12, load: 50, rirOrRpe: 2, restTime: 90, technique: "padrão", executionFeedback: "adequate", painReported: false, targetRepRange: "8–12" }],
   ...extra,
 });
 
@@ -27,9 +27,9 @@ test("one session never triggers aggressive adaptation", () => {
 
 test("exercise load progresses only after repeated adequate evidence", () => {
   const decision = decideExerciseProgression("leg_press", [record(3), record(2, { exerciseRecords: [{ ...record(2).exerciseRecords[0], repetitions: 11 }] }), record(1, { exerciseRecords: [{ ...record(1).exerciseRecords[0], repetitions: 10 }] })]);
-  assert.equal(decision.action, "increase");
+  assert.equal(decision.action, "progress");
   assert.ok(decision.suggestedLoad > 50);
-  assert.match(decision.reasons[0], /três sessões/i);
+  assert.match(decision.reasons[0], /três exposições/i);
 });
 
 test("recurring pain reduces exercise progression and volume", () => {
@@ -57,7 +57,7 @@ test("repeated substitutions become learned preferences", () => {
 
 test("cycle readiness has explicit progress, maintain and recovery thresholds", () => {
   const strong = Array.from({ length: 12 }, (_, index) => record(index));
-  assert.equal(calculateCycleReadiness(strong, 3).action, "increase");
+  assert.equal(calculateCycleReadiness(strong, 3).action, "progress");
   const recovering = strong.map((item) => ({ ...item, completedExercises: 2, sessionRpe: 10, painScore: 6, recovery24h: "Piorou" }));
   assert.equal(calculateCycleReadiness(recovering, 3).action, "reduce");
   assert.equal(calculateCycleReadiness(strong.slice(0, 3), 3).action, "maintain");
