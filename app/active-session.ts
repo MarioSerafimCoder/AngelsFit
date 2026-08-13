@@ -47,7 +47,8 @@ export type ActiveWorkoutSession = {
   loads: Record<string, string>;
   actualReps: Record<string, string>;
   rir: Record<string, string>;
-  notes: Record<string, string>;
+  /** @deprecated Preserved only when an older saved session contains notes. */
+  notes?: Record<string, string>;
   exerciseOverrides: Record<string, string>;
   substitutions: Array<{ fromExerciseId: string; toExerciseId: string; reason: string; changedAt: string }>;
   painEvents: Array<{ exerciseId: string; region: string; intensity: number; recordedAt: string }>;
@@ -83,9 +84,9 @@ export type SessionSummary = {
   estimatedOneRepMax: number;
   cardioMinutes: number;
   cardioIntensity: string;
-  sessionRpe: number;
-  averageRir: number;
-  painScore: number;
+  sessionRpe?: number;
+  averageRir?: number;
+  painScore?: number;
   symptoms: string[];
 };
 
@@ -121,7 +122,6 @@ export function createActiveWorkoutSession(workout: GeneratedWorkout, now = Date
     loads: {},
     actualReps: {},
     rir: {},
-    notes: {},
     exerciseOverrides: {},
     substitutions: [],
     painEvents: [],
@@ -254,7 +254,7 @@ export function normalizeActiveWorkoutSession(session: ActiveWorkoutSession): Ac
     loads: session.loads || {},
     actualReps: session.actualReps || {},
     rir: session.rir || {},
-    notes: session.notes || {},
+    ...(session.notes ? { notes: session.notes } : {}),
     exerciseOverrides: session.exerciseOverrides || {},
     substitutions: session.substitutions || [],
     painEvents: session.painEvents || [],
@@ -492,6 +492,9 @@ export function summarizeActiveSession(session: ActiveWorkoutSession, now = Date
   }
 
   const rirValues = Object.values(session.seriesData).flat().filter((entry) => entry.completed && entry.rir !== "").map((entry) => Number(entry.rir)).filter(Number.isFinite);
+  const sessionRpe = session.sessionRpe === "" ? undefined : Number(session.sessionRpe);
+  const painAfter = session.painAfter === "" ? undefined : Number(session.painAfter);
+  const reportedPain = session.painEvents.map((event) => event.intensity);
   return {
     completedExercises,
     totalExercises: items.length,
@@ -500,11 +503,19 @@ export function summarizeActiveSession(session: ActiveWorkoutSession, now = Date
     estimatedOneRepMax: Math.round(estimatedOneRepMax * 10) / 10,
     cardioMinutes: Number.parseInt(session.cardioMinutes || "0", 10),
     cardioIntensity: session.cardioIntensity,
-    sessionRpe: Number(session.sessionRpe),
-    averageRir: rirValues.length ? Math.round((rirValues.reduce((sum, value) => sum + value, 0) / rirValues.length) * 10) / 10 : 0,
-    painScore: Math.max(Number(session.painAfter), ...session.painEvents.map((event) => event.intensity), 0),
+    sessionRpe,
+    averageRir: rirValues.length ? Math.round((rirValues.reduce((sum, value) => sum + value, 0) / rirValues.length) * 10) / 10 : undefined,
+    painScore: painAfter !== undefined || reportedPain.length ? Math.max(painAfter ?? 0, ...reportedPain, 0) : undefined,
     symptoms: [...new Set([...session.postSymptoms, ...session.painEvents.map((event) => `${event.region} (${event.intensity}/10)`)])],
   };
+}
+
+export function hasMeaningfulSessionActivity(session: ActiveWorkoutSession): boolean {
+  return Object.values(session.seriesData || {}).some((entries) => entries.some((entry) => entry.completed))
+    || Object.values(session.completedSeries || {}).some((series) => series.length > 0)
+    || session.substitutions.length > 0
+    || session.painEvents.length > 0
+    || Number.parseInt(session.cardioMinutes || "", 10) > 0;
 }
 
 export function sessionCompletionProgress(session: ActiveWorkoutSession): { completedSeries: number; totalSeries: number; percentage: number; moreThanHalf: boolean } {

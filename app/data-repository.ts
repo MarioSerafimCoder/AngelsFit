@@ -1,4 +1,4 @@
-export const DATA_SCHEMA_VERSION = 5;
+export const DATA_SCHEMA_VERSION = 6;
 
 export const CRITICAL_STORAGE_KEYS = {
   profile: "fitlocal.profile.v1",

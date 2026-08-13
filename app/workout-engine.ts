@@ -4,6 +4,7 @@ import { recommendedWorkoutIndex, type TrainingHistoryLike } from "./training-in
 import { defaultRestSeconds } from "./rest-policy.ts";
 import { buildPeriodizationPlan, exerciseProgressionGuidance, upperRepetitionTarget, type PeriodizationPlan } from "./periodization.ts";
 import { fitWorkoutToTime } from "./workout-planning.ts";
+import { buildAdaptivePlan, decideExerciseProgression } from "./domain/adaptive-training.ts";
 
 export type ProfileForGeneration = {
   goal: string;
@@ -283,7 +284,10 @@ function prescribe(exercise: Exercise, profile: ProfileForGeneration, codes: str
   const experienceSetCap = profile.experience === "Iniciante" ? 3 : 5;
   const prescribedSets = Math.min(periodizedSets, experienceSetCap, conservative ? clinicalSetCap : 5);
   const periodizedReps = periodization?.track === "conditioning" ? base.reps : periodization?.repetitionTarget || base.reps;
-  const progression = periodization
+  const deterministicProgression = decideExerciseProgression(exercise.id, history);
+  const progression = deterministicProgression.suggestedLoad
+    ? `Próxima referência: ${String(deterministicProgression.suggestedLoad).replace(".", ",")} kg. ${deterministicProgression.reasons[0]}`
+    : periodization
     ? exerciseProgressionGuidance({ history, exerciseId: exercise.id, upperRepetitionTarget: upperRepetitionTarget(periodizedReps), periodization })
     : "Mantenha a carga enquanto acumula repetições com técnica estável.";
   const bodyweight = exercise.equipment === "Nenhum" || exercise.equipment.includes("Parede") || exercise.equipment.includes("Colchonete");
@@ -337,8 +341,8 @@ function classifyRecovery(profile: ProfileForGeneration, codes: string[], histor
   return "Média";
 }
 
-function effectiveFrequency(profile: ProfileForGeneration, experience: string, recovery: string) {
-  const desired = Math.max(1, profile.days.length);
+function effectiveFrequency(profile: ProfileForGeneration, experience: string, recovery: string, adaptiveDays?: number) {
+  const desired = Math.max(1, adaptiveDays || profile.days.length || 3);
   const experienceLimit = experience === "Iniciante" ? 4 : experience === "Intermediário" ? 5 : 6;
   const recoveryLimit = recovery === "Baixa" ? 4 : recovery === "Média" ? 5 : 6;
   return Math.min(desired, experienceLimit, recoveryLimit);
@@ -475,7 +479,8 @@ export function generateProgram(profile: ProfileForGeneration, context: Generati
   const codes = detectSafetyCodes(profile);
   const effectiveExperience = classifyExperience(profile, codes);
   const recoveryClass = classifyRecovery(profile, codes, context.history);
-  const effectiveDays = effectiveFrequency(profile, effectiveExperience, recoveryClass);
+  const adaptivePlan = buildAdaptivePlan(profile, context.history || [], now);
+  const effectiveDays = effectiveFrequency(profile, effectiveExperience, recoveryClass, adaptivePlan.effectiveDays);
   const effectiveProfile = { ...profile, experience: effectiveExperience };
   const postpartumSafety = assessPostpartumSafety(profile, now);
   const clearanceRequired = codes.includes("red_flag") || codes.includes("pregnancy") || (codes.includes("cardiovascular") && !profile.medicalClearance) || !postpartumSafety.eligible;
@@ -504,14 +509,23 @@ export function generateProgram(profile: ProfileForGeneration, context: Generati
 
   const specialProgram = postpartumProgram(profile, context, codes, now, notices);
   if (specialProgram) return specialProgram;
-  const periodization = buildPeriodizationPlan({ goal: profile.goal, safetyCodes: codes, history: context.history || [], sessionsPerWeek: effectiveDays });
+  const basePeriodization = buildPeriodizationPlan({ goal: profile.goal, safetyCodes: codes, history: context.history || [], sessionsPerWeek: effectiveDays });
+  const periodization: PeriodizationPlan = {
+    ...basePeriodization,
+    volumeMultiplier: adaptivePlan.volume.action === "reduce"
+      ? Math.min(basePeriodization.volumeMultiplier, 0.8)
+      : adaptivePlan.volume.action === "increase"
+        ? Math.min(1.2, basePeriodization.volumeMultiplier + 0.1)
+        : basePeriodization.volumeMultiplier,
+    reason: `${basePeriodization.reason} ${adaptivePlan.volume.reasons[0]}`,
+  };
 
   const avoidCodes = safetyAvoidCodes(codes);
   const lowImpact = codes.some((code) => ["postpartum", "cesarean", "pregnancy", "knee", "back", "balance", "low_impact", "cardiovascular"].includes(code));
   const rejectedTerms = (profile.rejectedExercises || "").toLocaleLowerCase("pt-BR").split(/[,;\n]/).map((item) => item.trim()).filter(Boolean);
   const preferredTerms = (profile.preferredExercises || "").toLocaleLowerCase("pt-BR").split(/[,;\n]/).map((item) => item.trim()).filter(Boolean);
   const allowed = exercises.filter((exercise) => isAllowed(exercise, effectiveProfile, avoidCodes, lowImpact) && matchesAvailableEquipment(exercise, profile.availableEquipment) && !rejectedTerms.some((term) => exercise.name.toLocaleLowerCase("pt-BR").includes(term)));
-  const minutes = Number.parseInt(profile.duration, 10) || 45;
+  const minutes = adaptivePlan.effectiveDurationMinutes;
   const mainCount = 8;
   const templates = workoutTemplates(effectiveDays);
   const phaseSeed = Math.max(0, periodization.cycleWeek - periodization.phaseWeek);
@@ -528,6 +542,11 @@ export function generateProgram(profile: ProfileForGeneration, context: Generati
       const styled = candidates.filter((exercise) => equipmentStyle(exercise) === preferredStyle);
       const pool = styled.length ? styled : candidates;
       const ranked = [...pool].sort((a, b) => {
+        const learnedA = adaptivePlan.preferences.find((item) => item.fromExerciseId === a.id || item.preferredExerciseId === a.id);
+        const learnedB = adaptivePlan.preferences.find((item) => item.fromExerciseId === b.id || item.preferredExerciseId === b.id);
+        const learnedScore = (item: typeof learnedA, id: string) => item?.preferredExerciseId === id ? 3 : item ? -(item.recentPainEvents * 2 + item.skips) : 0;
+        const learnedDifference = learnedScore(learnedB, b.id) - learnedScore(learnedA, a.id);
+        if (learnedDifference) return learnedDifference;
         const preferredDifference = Number(preferredTerms.some((term) => b.name.toLocaleLowerCase("pt-BR").includes(term))) - Number(preferredTerms.some((term) => a.name.toLocaleLowerCase("pt-BR").includes(term)));
         if (preferredDifference) return preferredDifference;
         const sourceDifference = Number(b.source === "Base academia 182") - Number(a.source === "Base academia 182");
@@ -574,7 +593,7 @@ export function generateProgram(profile: ProfileForGeneration, context: Generati
   return {
     databaseVersion: EXERCISE_DATABASE_VERSION,
     status: "ready",
-    title: `${profile.goal} · ${periodization.phase}`,
+    title: `${profile.goal || "Condicionamento geral"} · ${periodization.phase}`,
     summary: `${periodization.model}, semana ${periodization.cycleWeek} de ${periodization.cycleLengthWeeks}. ${effectiveExperience}, ${effectiveDays}x por semana e recuperação ${recoveryClass.toLowerCase()}.`,
     split: templates.map((item) => item.name.replace(/^[A-E] — /, "")).join(" · "),
     workouts,
@@ -591,7 +610,7 @@ export function generateProgram(profile: ProfileForGeneration, context: Generati
     effectiveDays,
     phaseCompletedSessions: periodization.sessionsPerWeek - periodization.sessionsToNextWeek,
     phaseRequiredSessions: periodization.sessionsPerWeek,
-    recommendationReason: `${periodization.reason} A semana do ciclo só avança com sessões concluídas dentro dos critérios de técnica, esforço, dor e recuperação.`,
+    recommendationReason: `${adaptivePlan.reasons[0]} ${periodization.reason} A semana do ciclo só avança quando prontidão e evidência são suficientes.`,
     periodization,
   };
 }

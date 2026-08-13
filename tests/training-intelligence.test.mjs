@@ -52,7 +52,7 @@ test("adherence separates completed, partial and skipped sessions", () => {
   assert.equal(summary.completedSessions, 1);
   assert.equal(summary.partialSessions, 1);
   assert.equal(summary.skippedSessions, 1);
-  assert.equal(summary.adherencePercentage, 33);
+  assert.equal(summary.adherencePercentage, 67);
 });
 
 test("a session with no completed movement is not reported as completed", () => {

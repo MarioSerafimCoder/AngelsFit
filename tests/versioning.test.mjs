@@ -21,7 +21,7 @@ test("migrates sequentially from schema 1", () => {
   const storage = new MemoryStorage();
   storage.setItem(DATA_SCHEMA_VERSION_KEY, "1");
 
-  assert.deepEqual(runDataMigrations(storage), [2, 3, 4, 5]);
+  assert.deepEqual(runDataMigrations(storage), [2, 3, 4, 5, 6]);
   assert.equal(storage.getItem(DATA_SCHEMA_VERSION_KEY), String(CURRENT_DATA_SCHEMA_VERSION));
 });
 
@@ -29,7 +29,7 @@ test("migrates from the previous schema without replaying completed work", () =>
   const storage = new MemoryStorage();
   storage.setItem(DATA_SCHEMA_VERSION_KEY, "2");
 
-  assert.deepEqual(runDataMigrations(storage), [3, 4, 5]);
+  assert.deepEqual(runDataMigrations(storage), [3, 4, 5, 6]);
   assert.deepEqual(runDataMigrations(storage), []);
 });
 
@@ -40,7 +40,7 @@ test("schema 4 preserves history while adding deterministic sequence data", () =
     { id: "old-1", workoutName: "Treino A", completedAt: "2026-08-01T12:00:00.000Z" },
   ]));
 
-  assert.deepEqual(runDataMigrations(storage), [4, 5]);
+  assert.deepEqual(runDataMigrations(storage), [4, 5, 6]);
   const [migrated] = JSON.parse(storage.getItem("brasafit.history.v2"));
   assert.equal(migrated.id, "old-1");
   assert.equal(migrated.status, "completed");
@@ -54,12 +54,23 @@ test("schema 5 expands legacy exercise records and active sessions per series", 
   storage.setItem("brasafit.history.v2", JSON.stringify([{ id: "h1", workoutName: "A", completedAt: "2026-08-10T12:00:00.000Z", exerciseRecords: [{ exerciseId: "squat", setsPlanned: 3, setsCompleted: 2, load: 20, repetitions: 10, rirOrRpe: 2 }] }]));
   storage.setItem("angelsfit.active-session.v1", JSON.stringify({ schemaVersion: 1, id: "s1", status: "active", createdAt: "2026-08-10T12:00:00.000Z", updatedAt: "2026-08-10T12:00:00.000Z", workout: { id: "a" }, currentExerciseIndex: 0, completedSeries: { squat: [1, 2] }, loads: { squat: "20" }, actualReps: { squat: "10" }, rir: { squat: "2" } }));
 
-  assert.deepEqual(runDataMigrations(storage), [5]);
+  assert.deepEqual(runDataMigrations(storage), [5, 6]);
   const [history] = JSON.parse(storage.getItem("brasafit.history.v2"));
   const session = JSON.parse(storage.getItem("angelsfit.active-session.v1"));
   assert.deepEqual(history.exerciseRecords[0].sets.map((entry) => entry.completed), [true, true, false]);
   assert.equal(session.schemaVersion, 2);
   assert.deepEqual(session.seriesData.squat.map((entry) => entry.loadKg), ["20", "20"]);
+});
+
+test("schema 6 converts legacy check-ins into non-advancing attendance", () => {
+  const storage = new MemoryStorage();
+  storage.setItem(DATA_SCHEMA_VERSION_KEY, "5");
+  storage.setItem("brasafit.history.v2", "[]");
+  storage.setItem("brasafit.checkins.v1", JSON.stringify([{ id: "c1", checkedAt: "2026-08-12T12:00:00.000Z" }]));
+  assert.deepEqual(runDataMigrations(storage), [6]);
+  const [attendance] = JSON.parse(storage.getItem("brasafit.history.v2"));
+  assert.equal(attendance.status, "attendance_legacy");
+  assert.equal(attendance.sequenceAdvance, 0);
 });
 
 test("compares native and content versions numerically", () => {

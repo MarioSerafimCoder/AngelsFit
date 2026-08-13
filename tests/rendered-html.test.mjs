@@ -28,7 +28,7 @@ test("server-renders the AngelsFit application shell", async () => {
   assert.doesNotMatch(html, /codex-preview|Starter Project|Building your site/i);
 });
 
-test("includes check-in, sequence calendar and protected interaction flows", async () => {
+test("includes automatic attendance, free workout flow and protected data flows", async () => {
   const [app, css, engine, periodization, data, postpartum, media, mediaQueries] = await Promise.all([
     readFile(new URL("../app/AngelsFitApp.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
@@ -40,8 +40,8 @@ test("includes check-in, sequence calendar and protected interaction flows", asy
     readFile(new URL("../app/exercise-media-queries.ts", import.meta.url), "utf8"),
   ]);
 
-  assert.match(app, /Fazer check-in/);
-  assert.match(app, /Check-in registrado/);
+  assert.doesNotMatch(app, /Fazer check-in|Check-in registrado/);
+  assert.match(app, /presença serão registradas automaticamente/);
   assert.match(app, /Descartar alterações\?/);
   assert.match(app, /Descartar sessão/);
   assert.match(app, /Restaurar meu backup/);
@@ -54,8 +54,8 @@ test("includes check-in, sequence calendar and protected interaction flows", asy
   assert.match(app, /Overview do treino/);
   assert.match(app, /Aquecimento e mobilidade/);
   assert.match(app, /Encerramento e alongamento/);
-  assert.match(app, /Duração do cardio/);
-  assert.match(app, /CHECK-IN DE PRONTIDÃO/);
+  assert.match(app, /Concluir série \{selectedSeries\} de \{current.sets\}/);
+  assert.match(app, /Ir para qualquer exercício/);
   assert.match(app, /RESPOSTA DE 24 HORAS/);
   assert.match(app, /Encerrar treino/);
   assert.match(app, /últimos 4/);
@@ -87,7 +87,7 @@ test("includes check-in, sequence calendar and protected interaction flows", asy
   assert.ok((media.match(/videoUrl/g) || []).length >= 10, "common movements should have bundled media");
   assert.ok((mediaQueries.match(/:\s*"/g) || []).length >= 70, "all movements should have an on-demand media query");
   assert.match(app, /oss\.exercisedb\.dev\/api\/v1\/exercises\/search/);
-  assert.match(css, /\.checkin-card/);
+  assert.doesNotMatch(css, /\.checkin-card/);
   assert.match(css, /\.confirm-dialog/);
   assert.match(css, /\.workout-block/);
   assert.match(css, /\.week-strip button/);

@@ -1,10 +1,10 @@
 import type { SyncKeyValueStorage } from "./data-repository";
 import { normalizeActiveWorkoutSession, type ActiveWorkoutSession } from "./active-session.ts";
-import { migrateTrainingHistory, type TrainingHistoryLike } from "./training-intelligence.ts";
+import { mergeLegacyCheckIns, migrateTrainingHistory, type TrainingHistoryLike } from "./training-intelligence.ts";
 
 export const APP_VERSION = "1.0";
-export const CONTENT_VERSION = "2026.08.11.3";
-export const CURRENT_DATA_SCHEMA_VERSION = 5;
+export const CONTENT_VERSION = "2026.08.13.1";
+export const CURRENT_DATA_SCHEMA_VERSION = 6;
 export const MINIMUM_SUPPORTED_APP_VERSION = "1.0";
 
 export const DATA_SCHEMA_VERSION_KEY = "angelsfit.data-schema-version";
@@ -63,6 +63,15 @@ const migrations: Record<number, Migration> = {
       storage.setItem(historyKey, JSON.stringify(expanded));
     }
     storage.setItem("angelsfit.migration.5", "complete");
+  },
+  6: (storage) => {
+    if (storage.getItem("angelsfit.migration.6") !== null) return;
+    const historyKey = "brasafit.history.v2";
+    const checkInsKey = "brasafit.checkins.v1";
+    const history = JSON.parse(storage.getItem(historyKey) || "[]") as TrainingHistoryLike[];
+    const checkIns = JSON.parse(storage.getItem(checkInsKey) || "[]") as Array<{ id?: string; checkedAt?: string }>;
+    storage.setItem(historyKey, JSON.stringify(mergeLegacyCheckIns(migrateTrainingHistory(history), checkIns)));
+    storage.setItem("angelsfit.migration.6", "complete");
   },
 };
 

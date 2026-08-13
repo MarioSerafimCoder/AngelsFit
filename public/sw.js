@@ -1,5 +1,5 @@
-const CONTENT_VERSION = "2026.08.11.3";
-const CACHE_NAME = "angels-fit-shell-v22-2026-08-11-3";
+const CONTENT_VERSION = "2026.08.13.1";
+const CACHE_NAME = "angels-fit-shell-v23-2026-08-13-1";
 const APP_SHELL = ["/", "/version.json", "/manifest.webmanifest", "/icon-192.png", "/icon-512.png", "/apple-touch-icon.png"];
 
 self.addEventListener("install", (event) => {

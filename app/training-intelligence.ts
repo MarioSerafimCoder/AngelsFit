@@ -1,6 +1,6 @@
 import type { GeneratedWorkout } from "./workout-engine";
 
-export type TrainingSessionStatus = "planned" | "in_progress" | "completed" | "partial" | "skipped" | "repeated" | "interrupted" | "manually_advanced";
+export type TrainingSessionStatus = "planned" | "in_progress" | "completed" | "partial" | "skipped" | "repeated" | "interrupted" | "manually_advanced" | "attendance_legacy";
 
 export type SeriesPerformanceRecord = {
   series: number;
@@ -159,6 +159,7 @@ export function normalizedTrainingStatus(item: TrainingHistoryLike): TrainingSes
 }
 
 export function trainingStatusLabel(item: TrainingHistoryLike): string {
+  if (normalizedTrainingStatus(item) === "attendance_legacy") return "Presença histórica";
   if (item.wasSkipped || normalizedTrainingStatus(item) === "skipped") return "Treino pulado";
   if (item.wasRepeated || normalizedTrainingStatus(item) === "repeated") return "Treino repetido";
   if (item.wasManuallyAdvanced || normalizedTrainingStatus(item) === "manually_advanced") return "Sequência avançada";
@@ -171,13 +172,14 @@ export function trainingStatusLabel(item: TrainingHistoryLike): string {
 }
 
 export function isAttendedTrainingSession(item: TrainingHistoryLike): boolean {
+  if (normalizedTrainingStatus(item) === "attendance_legacy") return true;
   const hasProgress = typeof item.completionPercentage === "number" ? item.completionPercentage > 0 : (item.completedExercises || 0) > 0;
   return ["completed", "partial", "interrupted", "repeated"].includes(normalizedTrainingStatus(item)) && hasProgress;
 }
 
 export function sequenceAdvanceFor(item: TrainingHistoryLike): number {
   const status = normalizedTrainingStatus(item);
-  if (["partial", "interrupted", "in_progress", "planned", "repeated"].includes(status)) return 0;
+  if (["partial", "interrupted", "in_progress", "planned", "repeated", "attendance_legacy"].includes(status)) return 0;
   if (typeof item.sequenceAdvance === "number") return Math.max(0, item.sequenceAdvance);
   return ADVANCING_STATUSES.has(status) ? 1 : 0;
 }
@@ -204,6 +206,36 @@ export function migrateTrainingHistory(history: TrainingHistoryLike[]): Training
     return migratedItem;
   });
   return migrated.sort((left, right) => new Date(right.completedAt).getTime() - new Date(left.completedAt).getTime());
+}
+
+export function mergeLegacyCheckIns(history: TrainingHistoryLike[], checkIns: Array<{ id?: string; checkedAt?: string }>): TrainingHistoryLike[] {
+  const migrated = migrateTrainingHistory(history);
+  const occupiedDays = new Set(migrated.filter(isAttendedTrainingSession).map((item) => toLocalDateKey(new Date(item.completedAt))));
+  const legacyAttendance: TrainingHistoryLike[] = [];
+  for (const checkIn of checkIns) {
+    if (!checkIn.checkedAt) continue;
+    const date = new Date(checkIn.checkedAt);
+    if (!Number.isFinite(date.getTime())) continue;
+    const dateKey = toLocalDateKey(date);
+    if (occupiedDays.has(dateKey)) continue;
+    occupiedDays.add(dateKey);
+    legacyAttendance.push({
+      id: `legacy-attendance-${checkIn.id || date.getTime()}`,
+      workoutId: "legacy-attendance",
+      workoutName: "Presença histórica",
+      completedAt: date.toISOString(),
+      plannedDate: dateKey,
+      status: "attendance_legacy",
+      sequenceNumber: 0,
+      sequenceAdvance: 0,
+      durationMinutes: 0,
+      completedExercises: 0,
+      totalExercises: 0,
+      completionPercentage: 0,
+      exerciseRecords: [],
+    });
+  }
+  return [...migrated, ...legacyAttendance].sort((left, right) => new Date(right.completedAt).getTime() - new Date(left.completedAt).getTime());
 }
 
 export function completedSequenceCount(history: TrainingHistoryLike[]): number {
@@ -274,7 +306,7 @@ export function calculateAdherence(history: TrainingHistoryLike[], now: Date, av
     completedSessions: completed.length,
     partialSessions: partial.length,
     skippedSessions: skipped.length,
-    adherencePercentage: plannedSessions ? Math.round((completed.length / plannedSessions) * 100) : 0,
+    adherencePercentage: plannedSessions ? Math.round(((completed.length + partial.length) / plannedSessions) * 100) : 0,
     averageSessionsPerWeek: Math.round((attended.length / elapsedWeeks) * 10) / 10,
     averageSessionDuration: durations.length ? Math.round(durations.reduce((sum, value) => sum + value, 0) / durations.length) : 0,
     longestInactivityPeriod,

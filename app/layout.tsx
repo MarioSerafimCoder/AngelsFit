@@ -14,7 +14,7 @@ export async function generateMetadata(): Promise<Metadata> {
   return {
     metadataBase: base,
     title: "AngelsFit — Seu treino, seu ritmo",
-    description: "Treinos pessoais, check-ins de presença e progresso disponíveis mesmo offline.",
+    description: "Treinos pessoais, presença automática e progresso disponíveis mesmo offline.",
     applicationName: "AngelsFit",
     manifest: "/manifest.webmanifest",
     appleWebApp: { capable: true, statusBarStyle: "black-translucent", title: "AngelsFit" },

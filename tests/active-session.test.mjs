@@ -9,6 +9,7 @@ import {
   createActiveWorkoutSession,
   getElapsedSeconds,
   getRestRemainingSeconds,
+  hasMeaningfulSessionActivity,
   isCardioPlanValid,
   normalizeActiveWorkoutSession,
   pauseRest,
@@ -186,7 +187,7 @@ test("normalizes older persisted sessions and includes pain events in the summar
   normalized.painEvents.push({ exerciseId: "squat", region: "Joelho direito", intensity: 5, recordedAt: new Date(0).toISOString() });
   const summary = summarizeActiveSession(normalized, 0);
 
-  assert.deepEqual(normalized.notes, {});
+  assert.equal(normalized.notes, undefined);
   assert.equal(summary.painScore, 5);
   assert.deepEqual(summary.symptoms, ["Joelho direito (5/10)"]);
 });
@@ -215,4 +216,15 @@ test("qualifies attendance only after more than half of the planned series", () 
 
   session = completeSeriesPerformance(session, "squat", 2, {}, 4_000);
   assert.deepEqual(sessionCompletionProgress(session), { completedSeries: 3, totalSeries: 4, percentage: 75, moreThanHalf: true });
+});
+
+test("keeps blank feedback unknown and counts a completed blank series as activity", () => {
+  let session = beginActiveSession(createActiveWorkoutSession(workout, 0), 0);
+  assert.equal(hasMeaningfulSessionActivity(session), false);
+  let series = seriesPerformances(session, "squat", 3)[0];
+  session = completeSeriesPerformance(session, "squat", 1, series);
+  assert.equal(hasMeaningfulSessionActivity(session), true);
+  const summary = summarizeActiveSession(session, 0);
+  assert.equal(summary.sessionRpe, undefined);
+  assert.equal(summary.painScore, undefined);
 });
