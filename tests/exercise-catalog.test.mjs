@@ -74,3 +74,24 @@ test("caps beginners at three sets when observed frequency adapts the cycle", ()
   const program = generateProgram(baseProfile, { now: new Date("2026-08-10T12:00:00.000Z"), history: qualifiedHistory });
   assert.ok(program.workouts.flatMap((workout) => workout.main).every((item) => item.sets <= 3));
 });
+
+test("cycle recovery score protects periodized volume and load", () => {
+  const difficultHistory = Array.from({ length: 8 }, (_, index) => ({
+    id: `difficult-${index}`,
+    completedAt: new Date(Date.UTC(2026, 7, index + 1, 12)).toISOString(),
+    status: "partial",
+    periodizationTrack: "hypertrophy",
+    durationMinutes: 35,
+    completedExercises: 2,
+    totalExercises: 6,
+    sessionRpe: 10,
+    painScore: 6,
+    recovery24h: "Piorou",
+    exerciseRecords: [],
+  }));
+  const program = generateProgram(baseProfile, { now: new Date("2026-08-10T12:00:00.000Z"), history: difficultHistory });
+  assert.ok(["regress", "deload"].includes(program.periodization?.decision || ""));
+  assert.ok((program.periodization?.volumeMultiplier || 1) <= 0.8);
+  assert.ok((program.periodization?.loadMultiplier || 1) <= 0.9);
+  assert.match(program.periodization?.reason || "", /score de prontidão|recuperação/i);
+});

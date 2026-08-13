@@ -510,14 +510,18 @@ export function generateProgram(profile: ProfileForGeneration, context: Generati
   const specialProgram = postpartumProgram(profile, context, codes, now, notices);
   if (specialProgram) return specialProgram;
   const basePeriodization = buildPeriodizationPlan({ goal: profile.goal, safetyCodes: codes, history: context.history || [], sessionsPerWeek: effectiveDays });
+  const adaptiveReduction = adaptivePlan.volume.action === "reduce" || adaptivePlan.cycle.action === "reduce";
+  const adaptiveIncrease = !adaptiveReduction && (adaptivePlan.volume.action === "increase" || adaptivePlan.cycle.action === "increase");
   const periodization: PeriodizationPlan = {
     ...basePeriodization,
-    volumeMultiplier: adaptivePlan.volume.action === "reduce"
+    volumeMultiplier: adaptiveReduction
       ? Math.min(basePeriodization.volumeMultiplier, 0.8)
-      : adaptivePlan.volume.action === "increase"
+      : adaptiveIncrease
         ? Math.min(1.2, basePeriodization.volumeMultiplier + 0.1)
         : basePeriodization.volumeMultiplier,
-    reason: `${basePeriodization.reason} ${adaptivePlan.volume.reasons[0]}`,
+    loadMultiplier: adaptivePlan.cycle.action === "reduce" ? Math.min(basePeriodization.loadMultiplier, 0.9) : basePeriodization.loadMultiplier,
+    decision: adaptivePlan.cycle.action === "reduce" && !basePeriodization.isDeload ? "regress" : basePeriodization.decision,
+    reason: `${basePeriodization.reason} ${adaptivePlan.volume.reasons[0]} ${adaptivePlan.cycle.reasons[0]}`,
   };
 
   const avoidCodes = safetyAvoidCodes(codes);

@@ -293,8 +293,8 @@ export function calculateAdherence(history: TrainingHistoryLike[], now: Date, av
   const completed = monthItems.filter((item) => normalizedTrainingStatus(item) === "completed");
   const partial = monthItems.filter((item) => ["partial", "interrupted", "repeated"].includes(normalizedTrainingStatus(item)) && !item.wasSkipped);
   const skipped = monthItems.filter((item) => ["skipped", "manually_advanced"].includes(normalizedTrainingStatus(item)) || item.wasSkipped);
-  const plannedSessions = Math.max(plannedSessionsThrough(startOfDay(now), availableDays), completed.length + partial.length + skipped.length);
-  const attended = [...completed, ...partial].sort((left, right) => new Date(left.completedAt).getTime() - new Date(right.completedAt).getTime());
+  const attended = monthItems.filter(isAttendedTrainingSession).sort((left, right) => new Date(left.completedAt).getTime() - new Date(right.completedAt).getTime());
+  const plannedSessions = Math.max(plannedSessionsThrough(startOfDay(now), availableDays), attended.length + skipped.length);
   let longestInactivityPeriod = 0;
   for (let index = 1; index < attended.length; index += 1) longestInactivityPeriod = Math.max(longestInactivityPeriod, daysBetween(new Date(attended[index - 1].completedAt), new Date(attended[index].completedAt)));
   if (attended.length) longestInactivityPeriod = Math.max(longestInactivityPeriod, daysBetween(new Date(attended[attended.length - 1].completedAt), now));
@@ -306,7 +306,7 @@ export function calculateAdherence(history: TrainingHistoryLike[], now: Date, av
     completedSessions: completed.length,
     partialSessions: partial.length,
     skippedSessions: skipped.length,
-    adherencePercentage: plannedSessions ? Math.round(((completed.length + partial.length) / plannedSessions) * 100) : 0,
+    adherencePercentage: plannedSessions ? Math.min(100, Math.round((attended.length / plannedSessions) * 100)) : 0,
     averageSessionsPerWeek: Math.round((attended.length / elapsedWeeks) * 10) / 10,
     averageSessionDuration: durations.length ? Math.round(durations.reduce((sum, value) => sum + value, 0) / durations.length) : 0,
     longestInactivityPeriod,

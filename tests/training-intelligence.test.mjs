@@ -55,6 +55,13 @@ test("adherence separates completed, partial and skipped sessions", () => {
   assert.equal(summary.adherencePercentage, 67);
 });
 
+test("legacy attendance contributes once to adherence without advancing sequence", () => {
+  const history = [record("1", "2026-08-01"), record("legacy", "2026-08-02", "attendance_legacy", { completedExercises: 0, totalExercises: 0, sequenceAdvance: 0 })];
+  const summary = calculateAdherence(history, new Date(2026, 7, 3, 12), ["Seg", "Qua", "Sex"]);
+  assert.equal(summary.adherencePercentage, 100);
+  assert.equal(recommendedWorkoutIndex(history, workouts.length), 1);
+});
+
 test("a session with no completed movement is not reported as completed", () => {
   const empty = record("empty", "2026-08-05", "completed", { completedExercises: 0, totalExercises: 10 });
   const short = record("short", "2026-08-05", "completed", { completedExercises: 4, totalExercises: 10 });

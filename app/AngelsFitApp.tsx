@@ -1588,7 +1588,7 @@ function AdaptiveWorkoutSession({ session, profile, history, previousWorkout, pr
     <main className={`session-shell session-with-end-action workout-font-${preferences.workoutFontSize}`}>
       <header className="session-header"><button className="session-close" onClick={() => setExitPrompt(true)}>Fechar</button><div><small>{state.workout.name}</small><strong>{Math.floor(elapsed / 60).toString().padStart(2, "0")}:{(elapsed % 60).toString().padStart(2, "0")}</strong></div><span>{state.currentExerciseIndex + 1}/{items.length}</span></header>
       <div className="session-progress"><span style={{ width: `${((state.currentExerciseIndex + 1) / items.length) * 100}%` }} /></div>
-      <nav className="exercise-jump-strip" aria-label="Ir para qualquer exercício">{items.map((item, index) => <button type="button" key={`${item.exercise.id}-${index}`} aria-current={index === state.currentExerciseIndex ? "step" : undefined} className={index === state.currentExerciseIndex ? "active" : ""} onClick={() => patch({ currentExerciseIndex: index })}>{index + 1}<span>{item.exercise.name}</span></button>)}</nav>
+      <nav className="exercise-jump-strip" aria-label="Ir para qualquer exercício">{items.map((item, index) => { const slotId = baseItems[index]?.exercise.id || item.exercise.id; const plannedSets = state.setOverrides[slotId] ?? item.sets; const done = seriesPerformances(state, slotId, plannedSets).every((entry) => entry.completed); return <button type="button" key={`${item.exercise.id}-${index}`} aria-current={index === state.currentExerciseIndex ? "step" : undefined} className={`${index === state.currentExerciseIndex ? "active" : ""} ${done ? "done" : ""}`} onClick={() => patch({ currentExerciseIndex: index })}>{done ? "✓" : index + 1}<span>{item.exercise.name}</span></button>; })}</nav>
       <section className="session-content">
         <p className="eyebrow">{state.currentExerciseIndex < state.workout.warmup.length ? "AQUECIMENTO E MOBILIDADE" : state.currentExerciseIndex >= state.workout.warmup.length + state.workout.main.length ? "ENCERRAMENTO E ALONGAMENTO" : "PARTE PRINCIPAL"}</p>
         <h1>{current.exercise.name}</h1>
@@ -1616,6 +1616,7 @@ function AdaptiveWorkoutSession({ session, profile, history, previousWorkout, pr
             {unilateral && <label className="series-field full-field">Lado<select value={activeSeriesEntry.side} onChange={(event) => updateCurrentSeries({ side: event.target.value as SeriesPerformance["side"] })}><option value="ambos">Ambos os lados</option><option value="direito">Lado direito</option><option value="esquerdo">Lado esquerdo</option></select></label>}
             {!activeSeriesEntry.completed && <button type="button" className="complete-series-button" onClick={() => finishCurrentSeries()}>Concluir série {selectedSeries} de {current.sets} <span>✓</span></button>}
           </article>}
+          {currentSeriesEntries.length > 0 && currentSeriesEntries.every((entry) => entry.completed) && <div className="exercise-complete-banner">Exercício concluído ✓</div>}
         </div>
         <ExerciseDemo key={current.exercise.id} exerciseId={current.exercise.id} exerciseName={current.exercise.name} compact />
         <details className="technique-card" open><summary>Como executar</summary><p>{current.exercise.instructions}</p><small>Cadência: {current.tempo}</small></details>

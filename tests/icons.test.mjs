@@ -2,20 +2,42 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { inflateSync } from "node:zlib";
 
-import sharp from "sharp";
+function inspectPng(buffer) {
+  assert.deepEqual([...buffer.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
+  let offset = 8;
+  let width = 0;
+  let height = 0;
+  let bitDepth = 0;
+  let colorType = 0;
+  const imageData = [];
+  while (offset < buffer.length) {
+    const length = buffer.readUInt32BE(offset);
+    const type = buffer.toString("ascii", offset + 4, offset + 8);
+    const data = buffer.subarray(offset + 8, offset + 8 + length);
+    if (type === "IHDR") {
+      width = data.readUInt32BE(0);
+      height = data.readUInt32BE(4);
+      bitDepth = data[8];
+      colorType = data[9];
+    }
+    if (type === "IDAT") imageData.push(data);
+    offset += length + 12;
+  }
+  const raw = inflateSync(Buffer.concat(imageData));
+  return { width, height, bitDepth, colorType, firstPixel: [...raw.subarray(1, 4)] };
+}
 
 test("iPhone home-screen icons are opaque, square and full bleed", async () => {
   for (const filename of ["apple-touch-icon.png", "apple-touch-icon-precomposed.png"]) {
     const path = fileURLToPath(new URL(`../public/${filename}`, import.meta.url));
-    const metadata = await sharp(path).metadata();
-    const { data, info } = await sharp(path).raw().toBuffer({ resolveWithObject: true });
-
+    const metadata = inspectPng(await readFile(path));
     assert.equal(metadata.width, 180);
     assert.equal(metadata.height, 180);
-    assert.equal(metadata.hasAlpha, false);
-    assert.equal(info.channels, 3);
-    assert.deepEqual([...data.subarray(0, 3)], [255, 98, 0]);
+    assert.equal(metadata.bitDepth, 8);
+    assert.equal(metadata.colorType, 2);
+    assert.deepEqual(metadata.firstPixel, [255, 98, 0]);
   }
 
   assert.deepEqual(
