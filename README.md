@@ -34,4 +34,4 @@ Os dados de treino ficam no aparelho e podem ser exportados manualmente. A sincr
 
 ## Android
 
-O APK auditado aponta para a URL pública do projeto e recebe novas versões do conteúdo após a publicação. O repositório não contém o projeto Android/Capacitor, os plugins nativos nem uma chave de assinatura de produção. Um novo APK deve ser gerado somente depois de recuperar esse projeto e configurar a assinatura de release; o APK atual é uma compilação de depuração.
+O projeto Android/Capacitor fica em `android/` e empacota uma versão local otimizada e offline. Para sincronizar o conteúdo nativo, use `npm run android:sync`; para gerar o APK, use `npm run android:apk`. A compilação interna usa a chave de desenvolvimento local e não substitui uma assinatura de publicação da Play Store.

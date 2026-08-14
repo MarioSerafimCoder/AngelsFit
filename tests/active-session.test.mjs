@@ -35,16 +35,17 @@ const exercise = (id, sets = 3) => ({
 
 test("combines today's check-in with the previous workout and keeps blank answers neutral", () => {
   const blank = createActiveWorkoutSession(workout, 0);
-  assert.equal(sessionReadiness(blank), "alta");
-  assert.equal(sessionReadiness(blank, { sessionRpe: 9, painScore: 4, status: "partial" }), "baixa");
-  assert.equal(sessionReadiness(blank, { painScore: 7 }), "atenção");
+  assert.equal(sessionReadiness(blank), "high");
+  assert.equal(sessionReadiness(blank, { sessionRpe: 9, painScore: 4, status: "partial" }), "low");
+  assert.equal(sessionReadiness(blank, { painScore: 7 }), "attention");
+  assert.equal(sessionReadiness(blank, undefined, "low"), "normal");
 });
 
 test("does not start a session when today's safety check requires attention", () => {
   const session = { ...createActiveWorkoutSession(workout, 0), newPain: true };
   const started = beginActiveSession(session, 1_000);
 
-  assert.equal(sessionReadiness(session), "atenção");
+  assert.equal(sessionReadiness(session), "attention");
   assert.equal(started.status, "setup");
   assert.equal(started.elapsedStartedAt, null);
 });
@@ -53,7 +54,7 @@ test("materializes readiness-adjusted sets so completion uses what the user saw"
   const previousWorkout = { sessionRpe: 9, painScore: 4, status: "partial" };
   let session = beginActiveSession(createActiveWorkoutSession(workout, 0), 1_000, previousWorkout);
 
-  assert.equal(sessionReadiness(session, previousWorkout), "baixa");
+  assert.equal(sessionReadiness(session, previousWorkout), "low");
   assert.equal(session.setOverrides.squat, 2);
 
   session = { ...session, completedSeries: { warmup: [1], squat: [1, 2] } };
@@ -63,15 +64,15 @@ test("materializes readiness-adjusted sets so completion uses what the user saw"
 
 test("validates and summarizes the cardio plan stored in the active session", () => {
   const session = createActiveWorkoutSession(workout, 0);
-  assert.equal(session.cardioIntensity, "Sem cardio hoje");
+  assert.equal(session.cardioIntensity, "none");
   assert.equal(isCardioPlanValid(session), true);
-  assert.equal(isCardioPlanValid({ cardioIntensity: "Moderada", cardioMinutes: "" }), false);
-  assert.equal(isCardioPlanValid({ cardioIntensity: "Moderada", cardioMinutes: "20.5" }), false);
-  assert.equal(isCardioPlanValid({ cardioIntensity: "Moderada", cardioMinutes: "25" }), true);
+  assert.equal(isCardioPlanValid({ cardioIntensity: "moderate", cardioMinutes: "" }), false);
+  assert.equal(isCardioPlanValid({ cardioIntensity: "moderate", cardioMinutes: "20.5" }), false);
+  assert.equal(isCardioPlanValid({ cardioIntensity: "moderate", cardioMinutes: "25" }), true);
 
-  const summary = summarizeActiveSession({ ...session, cardioIntensity: "Moderada", cardioMinutes: "25" }, 0);
+  const summary = summarizeActiveSession({ ...session, cardioIntensity: "moderate", cardioMinutes: "25" }, 0);
   assert.equal(summary.cardioMinutes, 25);
-  assert.equal(summary.cardioIntensity, "Moderada");
+  assert.equal(summary.cardioIntensity, "moderate");
 });
 
 const workout = {
@@ -123,7 +124,7 @@ test("summarizes completed series, volume and repetitions from persisted state",
     actualReps: { squat: "10" },
     rir: { squat: "2" },
     cardioMinutes: "12",
-    cardioIntensity: "Leve",
+    cardioIntensity: "light",
   };
   const summary = summarizeActiveSession(session, 120_000);
 
@@ -170,7 +171,7 @@ test("migrates an old exercise-level load into its completed series", () => {
   legacy.rir = { squat: "2" };
 
   const normalized = normalizeActiveWorkoutSession(legacy);
-  assert.equal(normalized.schemaVersion, 2);
+  assert.equal(normalized.schemaVersion, 3);
   assert.deepEqual(seriesPerformances(normalized, "squat", 3).map((entry) => [entry.completed, entry.loadKg, entry.repetitions, entry.rir]), [[true, "30", "8", "2"], [true, "30", "8", "2"], [true, "30", "8", "2"]]);
 });
 
@@ -226,5 +227,6 @@ test("keeps blank feedback unknown and counts a completed blank series as activi
   assert.equal(hasMeaningfulSessionActivity(session), true);
   const summary = summarizeActiveSession(session, 0);
   assert.equal(summary.sessionRpe, undefined);
+  assert.equal(summary.averageRir, undefined);
   assert.equal(summary.painScore, undefined);
 });

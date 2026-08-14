@@ -112,3 +112,70 @@ export async function openExternal(url: string): Promise<void> {
   }
   window.open(url, "_blank", "noopener,noreferrer");
 }
+
+export async function shareNativeBackup(filename: string, contents: string): Promise<boolean> {
+  if (!isNativeApp()) return false;
+  const filesystem = plugin("Filesystem");
+  const share = plugin("Share");
+  if (!filesystem?.writeFile || !filesystem?.getUri || !share?.share) return false;
+  try {
+    await filesystem.writeFile({
+      path: filename,
+      data: contents,
+      directory: "CACHE",
+      encoding: "utf8",
+      recursive: true,
+    } as never);
+    const file = await filesystem.getUri({ path: filename, directory: "CACHE" } as never);
+    const uri = typeof file === "object" && file !== null && "uri" in file && typeof file.uri === "string" ? file.uri : null;
+    if (!uri) return false;
+    await share.share({
+      title: "Backup do AngelsFit",
+      text: "Backup dos meus dados de treino no AngelsFit.",
+      files: [uri],
+      dialogTitle: "Salvar ou compartilhar backup",
+    } as never);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function requestRestNotificationPermission(): Promise<boolean> {
+  const notifications = plugin("LocalNotifications");
+  if (!notifications) return typeof Notification !== "undefined" && Notification.permission === "granted";
+  try {
+    const current = await notifications.checkPermissions?.();
+    if (typeof current === "object" && current !== null && "display" in current && current.display === "granted") return true;
+    const requested = await notifications.requestPermissions?.();
+    return typeof requested === "object" && requested !== null && "display" in requested && requested.display === "granted";
+  } catch {
+    return false;
+  }
+}
+
+export async function showRestNotification(): Promise<void> {
+  const notifications = plugin("LocalNotifications");
+  if (notifications?.schedule) {
+    try {
+      await notifications.schedule({
+        notifications: [{
+          id: Math.max(1, Math.floor(Date.now() / 1000) % 2_000_000_000),
+          title: "Descanso concluído",
+          body: "Sua próxima série está pronta.",
+          schedule: { at: new Date(Date.now() + 300) },
+        }],
+      } as never);
+      return;
+    } catch {
+      // The service worker fallback remains available in browsers.
+    }
+  }
+  await navigator.serviceWorker?.ready
+    .then((registration) => registration.showNotification("Descanso concluído", {
+      body: "Sua próxima série está pronta.",
+      icon: "/icon-192.png",
+      tag: "angelsfit-rest",
+    }))
+    .catch(() => undefined);
+}

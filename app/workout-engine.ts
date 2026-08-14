@@ -4,7 +4,14 @@ import { recommendedWorkoutIndex, type TrainingHistoryLike } from "./training-in
 import { defaultRestSeconds } from "./rest-policy.ts";
 import { buildPeriodizationPlan, exerciseProgressionGuidance, upperRepetitionTarget, type PeriodizationPlan } from "./periodization.ts";
 import { fitWorkoutToTime } from "./workout-planning.ts";
-import { buildAdaptivePlan, decideExerciseProgression } from "./domain/adaptive-training.ts";
+import { buildAdaptivePlan } from "./domain/adaptive-training.ts";
+import { buildExerciseState } from "./domain/exercise-state.ts";
+import { buildMuscleState } from "./domain/muscle-state.ts";
+import { prescribeAdaptiveDose, prescribedWeeklySetsByMuscle } from "./domain/dose-response.ts";
+import { assessExerciseSafety } from "./domain/safety-engine.ts";
+import { exerciseDoseMetadata, stimulusFatigueScore } from "./domain/stimulus-fatigue.ts";
+import { isPoorRecovery } from "./domain/recovery.ts";
+import type { ExercisePriority } from "./domain/types.ts";
 
 export type ProfileForGeneration = {
   goal: string;
@@ -45,6 +52,8 @@ export type GeneratedExercise = {
   loadSuggestion: string;
   targetRpe: string;
   note: string;
+  priority?: ExercisePriority;
+  adaptiveReasons?: string[];
 };
 
 export type GeneratedWorkout = {
@@ -82,6 +91,9 @@ export type GeneratedProgram = {
   phaseRequiredSessions?: number;
   recommendationReason?: string;
   periodization?: PeriodizationPlan;
+  adaptiveConfidence?: "low" | "medium" | "high";
+  adaptiveReasons?: string[];
+  calibrationStatus?: "calibrating" | "calibrated";
 };
 
 export const specialConditionOptions = [
@@ -261,9 +273,9 @@ function isAllowed(exercise: Exercise, profile: ProfileForGeneration, avoidCodes
   return !exercise.avoidWhen.some((code) => avoidCodes.includes(code));
 }
 
-function prescribe(exercise: Exercise, profile: ProfileForGeneration, codes: string[], section: "warmup" | "main" | "cooldown", periodization?: PeriodizationPlan, history: TrainingHistoryLike[] = []): GeneratedExercise {
-  if (section === "warmup") return { exercise, sets: 1, reps: "4–6 min", rest: 0, tempo: "leve", loadSuggestion: "Sem carga", targetRpe: "RPE 3–4", note: "Prepare o corpo sem fadigar." };
-  if (section === "cooldown") return { exercise, sets: 1, reps: "45–60 s", rest: 0, tempo: "confortável", loadSuggestion: "Sem carga", targetRpe: "RPE 2–3", note: "Sem forçar amplitude." };
+function prescribe(exercise: Exercise, profile: ProfileForGeneration, codes: string[], section: "warmup" | "main" | "cooldown", periodization?: PeriodizationPlan, history: TrainingHistoryLike[] = [], priority: ExercisePriority = "B"): GeneratedExercise {
+  if (section === "warmup") return { exercise, sets: 1, reps: "4–6 min", rest: 0, tempo: "leve", loadSuggestion: "Sem carga", targetRpe: "RPE 3–4", note: "Prepare o corpo sem fadigar.", priority: "B" };
+  if (section === "cooldown") return { exercise, sets: 1, reps: "45–60 s", rest: 0, tempo: "confortável", loadSuggestion: "Sem carga", targetRpe: "RPE 2–3", note: "Sem forçar amplitude.", priority: "C" };
   const base = scheme(profile, codes);
   const conservative = codes.some((code) => ["postpartum", "cesarean", "pregnancy", "hypertension", "cardiovascular", "back", "knee", "shoulder"].includes(code));
   if (exercise.movement === "cardio") {
@@ -284,9 +296,11 @@ function prescribe(exercise: Exercise, profile: ProfileForGeneration, codes: str
   const experienceSetCap = profile.experience === "Iniciante" ? 3 : 5;
   const prescribedSets = Math.min(periodizedSets, experienceSetCap, conservative ? clinicalSetCap : 5);
   const periodizedReps = periodization?.track === "conditioning" ? base.reps : periodization?.repetitionTarget || base.reps;
-  const deterministicProgression = decideExerciseProgression(exercise.id, history);
-  const progression = deterministicProgression.suggestedLoad
-    ? `Próxima referência: ${String(deterministicProgression.suggestedLoad).replace(".", ",")} kg. ${deterministicProgression.reasons[0]}`
+  const targetRir = /RPE\s*(\d+)/i.test(periodization?.effortTarget || base.rpe) ? Math.max(0, 10 - Number((periodization?.effortTarget || base.rpe).match(/\d+/)?.[0] || 8)) : 2;
+  const state = buildExerciseState({ exerciseId: exercise.id, history, repRange: periodizedReps, targetRir });
+  const progressionLoad = state.suggestedAction === "progress" ? state.suggestedLoad : null;
+  const progression = progressionLoad
+    ? `Próxima referência: ${String(progressionLoad).replace(".", ",")} kg. ${state.reasons[0]}`
     : periodization
     ? exerciseProgressionGuidance({ history, exerciseId: exercise.id, upperRepetitionTarget: upperRepetitionTarget(periodizedReps), periodization })
     : "Mantenha a carga enquanto acumula repetições com técnica estável.";
@@ -300,6 +314,8 @@ function prescribe(exercise: Exercise, profile: ProfileForGeneration, codes: str
     loadSuggestion: bodyweight ? `Peso corporal · ${progression}` : progression,
     targetRpe: conservative && !periodization ? "RPE 5–6" : periodization?.effortTarget || base.rpe,
     note: `${periodization?.progressionFocus || "A última repetição deve permanecer tecnicamente limpa."} ${conservative ? "Pare ao primeiro sinal de piora dos sintomas." : "Progrida apenas uma variável por vez."}`,
+    priority,
+    adaptiveReasons: state.reasons.slice(0, 2),
   };
 }
 
@@ -334,7 +350,7 @@ function classifyRecovery(profile: ProfileForGeneration, codes: string[], histor
     profile.stressLevel === "Alto",
     profile.recoveryFeeling === "Ruim",
     codes.some((code) => ["postpartum", "cesarean", "back", "knee"].includes(code)),
-    history.slice(0, 3).some((item) => (item.painScore || 0) >= 4 || item.recovery24h === "Piorou"),
+    history.slice(0, 3).some((item) => (item.painScore || 0) >= 4 || isPoorRecovery(item.recovery24h)),
   ].filter(Boolean).length;
   if (lowSignals >= 2) return "Baixa";
   if ((profile.averageSleepHours || 0) >= 7 && profile.stressLevel === "Baixo" && profile.recoveryFeeling === "Boa") return "Alta";
@@ -364,8 +380,8 @@ function reviewPreviousCycle(history: NonNullable<GenerationContext["history"]>,
   if (!history.length) return { action: "reference" as const, adherence: 0 };
   const completed = history.filter((item) => (item.completedExercises || 0) / Math.max(1, item.totalExercises || 0) >= 0.7);
   const adherence = completed.length / Math.max(1, plannedSessions);
-  const symptomsWorsened = history.some((item) => (item.painScore || 0) >= 4 || (item.symptoms || []).length > 0 || item.recovery24h === "Piorou");
-  const poorRecovery = history.some((item) => (item.sessionRpe || 0) >= 9 || item.recovery24h === "Muito cansada");
+  const symptomsWorsened = history.some((item) => (item.painScore || 0) >= 4 || (item.symptoms || []).length > 0 || isPoorRecovery(item.recovery24h));
+  const poorRecovery = history.some((item) => (item.sessionRpe || 0) >= 9 || isPoorRecovery(item.recovery24h));
   if (symptomsWorsened) return { action: "regress" as const, adherence };
   if (adherence < 0.6 || poorRecovery) return { action: "simplify" as const, adherence };
   if (adherence < 0.8) return { action: "maintain" as const, adherence };
@@ -510,8 +526,8 @@ export function generateProgram(profile: ProfileForGeneration, context: Generati
   const specialProgram = postpartumProgram(profile, context, codes, now, notices);
   if (specialProgram) return specialProgram;
   const basePeriodization = buildPeriodizationPlan({ goal: profile.goal, safetyCodes: codes, history: context.history || [], sessionsPerWeek: effectiveDays });
-  const adaptiveReduction = adaptivePlan.volume.action === "reduce" || adaptivePlan.cycle.action === "reduce";
-  const adaptiveIncrease = !adaptiveReduction && (adaptivePlan.volume.action === "increase" || adaptivePlan.cycle.action === "increase");
+  const adaptiveReduction = adaptivePlan.cycle.action === "reduce";
+  const adaptiveIncrease = adaptivePlan.cycle.action === "progress";
   const periodization: PeriodizationPlan = {
     ...basePeriodization,
     volumeMultiplier: adaptiveReduction
@@ -534,7 +550,8 @@ export function generateProgram(profile: ProfileForGeneration, context: Generati
   const templates = workoutTemplates(effectiveDays);
   const phaseSeed = Math.max(0, periodization.cycleWeek - periodization.phaseWeek);
   const complexityTarget = targetComplexity(effectiveProfile, periodization);
-  const workouts = templates.map((template, templateIndex) => {
+  const exerciseStateCache = new Map(allowed.map((exercise) => [exercise.id, buildExerciseState({ exerciseId: exercise.id, history: context.history || [] })]));
+  const rawWorkouts = templates.map((template, templateIndex) => {
     const selected = new Set<string>();
     const main: GeneratedExercise[] = [];
     const slots = focusSlots[template.focus] || focusSlots.full;
@@ -551,6 +568,8 @@ export function generateProgram(profile: ProfileForGeneration, context: Generati
         const learnedScore = (item: typeof learnedA, id: string) => item?.preferredExerciseId === id ? 3 : item ? -(item.recentPainEvents * 2 + item.skips) : 0;
         const learnedDifference = learnedScore(learnedB, b.id) - learnedScore(learnedA, a.id);
         if (learnedDifference) return learnedDifference;
+        const affinityDifference = (exerciseStateCache.get(b.id)?.preferenceScore || 0) - (exerciseStateCache.get(a.id)?.preferenceScore || 0);
+        if (affinityDifference) return affinityDifference;
         const preferredDifference = Number(preferredTerms.some((term) => b.name.toLocaleLowerCase("pt-BR").includes(term))) - Number(preferredTerms.some((term) => a.name.toLocaleLowerCase("pt-BR").includes(term)));
         if (preferredDifference) return preferredDifference;
         const sourceDifference = Number(b.source === "Base academia 182") - Number(a.source === "Base academia 182");
@@ -564,31 +583,57 @@ export function generateProgram(profile: ProfileForGeneration, context: Generati
         || allowed.find((item) => !selected.has(item.id) && !["warmup", "cooldown", "mobility"].includes(item.movement));
       if (!exercise) continue;
       selected.add(exercise.id);
-      main.push(prescribe(exercise, effectiveProfile, codes, "main", periodization, context.history || []));
+      const priority: ExercisePriority = index < 2 ? "A" : index < 5 ? "B" : "C";
+      const safety = assessExerciseSafety(profile, exercise, context.history || []);
+      if (!safety.allowed) continue;
+      let generated = prescribe(exercise, effectiveProfile, codes, "main", periodization, context.history || [], priority);
+      if (safety.disposition === "allowedWithModification") generated = { ...generated, sets: Math.max(1, generated.sets - 1), loadSuggestion: `Carga conservadora. ${safety.modifications[0] || safety.reasons[0]}`, adaptiveReasons: [...(generated.adaptiveReasons || []), ...safety.reasons] };
+      main.push(generated);
     }
     const warmupCandidates = allowed.filter((exercise) => exercise.movement === "warmup" || exercise.movement === "mobility");
     const cooldownCandidates = allowed.filter((exercise) => exercise.movement === "cooldown");
     const supportExerciseCount = minutes <= 30 ? 1 : 2;
     const warmup = Array.from({ length: Math.min(supportExerciseCount, warmupCandidates.length) }, (_, index) => warmupCandidates[(phaseSeed + templateIndex + index) % warmupCandidates.length]).map((exercise) => prescribe(exercise, effectiveProfile, codes, "warmup"));
     const cooldown = Array.from({ length: Math.min(supportExerciseCount, cooldownCandidates.length) }, (_, index) => cooldownCandidates[(phaseSeed + templateIndex + index) % cooldownCandidates.length]).map((exercise) => prescribe(exercise, effectiveProfile, codes, "cooldown"));
-    const fitted = fitWorkoutToTime({
-      targetMinutes: minutes,
-      warmup: warmup.length ? warmup : [prescribe(exercises[0], effectiveProfile, codes, "warmup")],
-      main,
-      cooldown: cooldown.length ? cooldown : [prescribe(exercises.find((exercise) => exercise.id === "breathing_reset")!, effectiveProfile, codes, "cooldown")],
-      minimumMainExercises: minutes <= 30 ? 3 : 4,
-    });
     return {
       id: `cycle-${periodization.cycleNumber}-week-${periodization.cycleWeek}-${templateIndex + 1}`,
       name: template.name,
       focus: profile.goal,
-      estimatedMinutes: fitted.estimatedMinutes,
-      targetMinutes: minutes,
-      warmup: fitted.warmup,
-      main: fitted.main,
-      cooldown: fitted.cooldown,
+      warmup: warmup.length ? warmup : [prescribe(exercises[0], effectiveProfile, codes, "warmup")],
+      main,
+      cooldown: cooldown.length ? cooldown : [prescribe(exercises.find((exercise) => exercise.id === "breathing_reset")!, effectiveProfile, codes, "cooldown")],
       notices,
     };
+  });
+
+  const prescribedByMuscle = prescribedWeeklySetsByMuscle(rawWorkouts);
+  const doseByMuscle = new Map([...prescribedByMuscle.entries()].map(([muscle, prescribedSets]) => {
+    const state = buildMuscleState({ muscleGroup: muscle, history: context.history || [], prescribedWeeklySets: prescribedSets, now });
+    const sessionsSinceChange = state.lastVolumeChange ? (context.history || []).filter((session) => new Date(session.completedAt) > new Date(state.lastVolumeChange!)).length : 6;
+    return [muscle, { state, decision: prescribeAdaptiveDose(state, sessionsSinceChange) }] as const;
+  }));
+  const adjustmentTargets = new Map<string, string>();
+  for (const [muscle, { decision }] of doseByMuscle) {
+    const candidates = rawWorkouts.flatMap((workout) => workout.main.map((item) => ({ key: `${workout.id}:${item.exercise.id}`, item }))).filter(({ item }) => (item.exercise.primaryGroup || item.exercise.muscleGroups[0]) === muscle);
+    if (decision.suggestedWeeklySets < (prescribedByMuscle.get(muscle) || 0)) {
+      const target = candidates.filter(({ item }) => item.sets > 1).sort((left, right) => exerciseDoseMetadata(right.item.exercise).fatigueCost - exerciseDoseMetadata(left.item.exercise).fatigueCost)[0];
+      if (target) adjustmentTargets.set(muscle, target.key);
+    } else if (decision.suggestedWeeklySets > (prescribedByMuscle.get(muscle) || 0)) {
+      const priorityRank: Record<ExercisePriority, number> = { A: 0, B: 1, C: 2 };
+      const target = candidates.sort((left, right) => priorityRank[left.item.priority || "B"] - priorityRank[right.item.priority || "B"] || stimulusFatigueScore(exerciseDoseMetadata(right.item.exercise)) - stimulusFatigueScore(exerciseDoseMetadata(left.item.exercise)))[0];
+      if (target) adjustmentTargets.set(muscle, target.key);
+    }
+  }
+  const workouts: GeneratedWorkout[] = rawWorkouts.map((workout) => {
+    const main = workout.main.map((item) => {
+      const muscle = item.exercise.primaryGroup || item.exercise.muscleGroups[0];
+      const dose = doseByMuscle.get(muscle);
+      if (!dose || adjustmentTargets.get(muscle) !== `${workout.id}:${item.exercise.id}`) return item;
+      const delta = Math.sign(dose.decision.suggestedWeeklySets - (prescribedByMuscle.get(muscle) || 0));
+      return { ...item, sets: Math.max(1, item.sets + delta), adaptiveReasons: [...(item.adaptiveReasons || []), ...dose.decision.reasons] };
+    });
+    const fitted = fitWorkoutToTime({ targetMinutes: minutes, warmup: workout.warmup, main, cooldown: workout.cooldown, minimumMainExercises: minutes <= 30 ? 3 : 4 });
+    return { ...workout, estimatedMinutes: fitted.estimatedMinutes, targetMinutes: minutes, warmup: fitted.warmup, main: fitted.main, cooldown: fitted.cooldown };
   });
 
   const todayWorkoutIndex = recommendedWorkoutIndex(context.history || [], workouts.length);
@@ -616,5 +661,8 @@ export function generateProgram(profile: ProfileForGeneration, context: Generati
     phaseRequiredSessions: periodization.sessionsPerWeek,
     recommendationReason: `${adaptivePlan.reasons[0]} ${periodization.reason} A semana do ciclo só avança quando prontidão e evidência são suficientes.`,
     periodization,
+    adaptiveConfidence: adaptivePlan.confidence,
+    adaptiveReasons: adaptivePlan.reasons.slice(0, 2),
+    calibrationStatus: adaptivePlan.calibrationStatus,
   };
 }

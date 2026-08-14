@@ -1,16 +1,11 @@
 import type { ProfileForGeneration } from "../workout-engine";
 import type { ExercisePerformanceRecord, TrainingHistoryLike } from "../training-intelligence";
+import { buildExerciseState } from "./exercise-state.ts";
+import { calculateSessionQuality } from "./session-quality.ts";
+import { isPoorRecovery } from "./recovery.ts";
+import type { AdaptiveDecision, CalibrationStatus } from "./types.ts";
 
 export type AlgorithmConfidence = "low" | "medium" | "high";
-export type AdaptiveAction = "increase" | "maintain" | "reduce";
-
-export type AdaptiveDecision = {
-  action: AdaptiveAction;
-  confidence: AlgorithmConfidence;
-  score: number;
-  reasons: string[];
-};
-
 export type ExerciseProgressionDecision = AdaptiveDecision & {
   exerciseId: string;
   suggestedLoad?: number;
@@ -34,6 +29,7 @@ export type AdaptivePlan = {
   confidenceScore: number;
   reasons: string[];
   preferences: LearnedExercisePreference[];
+  calibrationStatus: CalibrationStatus;
 };
 
 const ATTENDED = new Set(["completed", "partial", "repeated", "attendance_legacy"]);
@@ -105,10 +101,15 @@ export function actualTrainingBehavior(history: TrainingHistoryLike[], now = new
   };
 }
 
-export function decideExerciseProgression(exerciseId: string, history: TrainingHistoryLike[]): ExerciseProgressionDecision {
+export function decideExerciseProgression(exerciseId: string, history: TrainingHistoryLike[], repRange?: string, targetRir = 2): ExerciseProgressionDecision {
   const samples = recordsForExercise(history, exerciseId).slice(0, 4);
+  const inferredRepRange = repRange || samples.find(({ record }) => record.targetRepRange)?.record.targetRepRange;
+  const state = buildExerciseState({ exerciseId, history, repRange: inferredRepRange, targetRir });
+  const decisionBase = { exerciseId, affectedEntity: exerciseId, source: "exercise" as const };
+  if (state.suggestedAction === "safety_adjustment" || state.suggestedAction === "recover" || state.suggestedAction === "reduce") return { ...decisionBase, action: "reduce", confidence: state.confidenceScore >= 72 ? "high" : state.confidenceScore >= 38 ? "medium" : "low", score: 30, reasons: state.reasons };
+  if (state.suggestedAction === "progress" && state.suggestedLoad !== null && state.suggestedLoad !== state.currentLoadReference) return { ...decisionBase, action: "progress", confidence: state.confidenceScore >= 72 ? "high" : state.confidenceScore >= 38 ? "medium" : "low", score: 82, suggestedLoad: state.suggestedLoad, reasons: state.reasons };
   const confidence = confidenceFromScore(clamp(samples.length / 4, 0, 1));
-  if (samples.length < 3) return { exerciseId, action: "maintain", confidence, score: 50, reasons: ["Mantivemos a referência porque ainda são necessárias três execuções comparáveis."] };
+  if (samples.length < 3) return { ...decisionBase, action: "maintain", confidence, score: 50, reasons: ["Mantivemos a referência porque ainda são necessárias três execuções comparáveis."] };
 
   const valid = samples.filter(({ record }) => finite(record.load) && record.load > 0 && finite(record.repetitions) && record.repetitions > 0);
   const painful = samples.filter(({ session, record }) => record.painReported || (finite(session.painScore) && session.painScore >= 4)).length;
@@ -116,36 +117,25 @@ export function decideExerciseProgression(exerciseId: string, history: TrainingH
   const hard = samples.filter(({ session, record }) => (finite(record.rirOrRpe) && record.rirOrRpe <= 1) || (finite(session.sessionRpe) && session.sessionRpe >= 9)).length;
 
   if (painful >= 2 || incomplete >= 3 || hard >= 3) {
-    return { exerciseId, action: "reduce", confidence, score: 32, reasons: [painful >= 2 ? "Dor recorrente foi registrada recentemente neste exercício." : incomplete >= 3 ? "As séries planejadas ficaram incompletas repetidamente." : "O esforço recente ficou alto demais para progredir com segurança."] };
+    return { ...decisionBase, action: "reduce", confidence, score: 32, reasons: [painful >= 2 ? "Dor recorrente foi registrada recentemente neste exercício." : incomplete >= 3 ? "As séries planejadas ficaram incompletas repetidamente." : "O esforço recente ficou alto demais para progredir com segurança."] };
   }
 
-  if (valid.length >= 3) {
-    const recent = valid.slice(0, 3);
-    const sameLoad = Math.max(...recent.map(({ record }) => record.load!)) - Math.min(...recent.map(({ record }) => record.load!)) <= 0.01;
-    const repTrend = recent[0].record.repetitions! >= recent[1].record.repetitions! && recent[1].record.repetitions! >= recent[2].record.repetitions!;
-    const adequateRir = recent.every(({ record }) => !finite(record.rirOrRpe) || record.rirOrRpe >= 2);
-    const complete = recent.every(({ record }) => record.setsCompleted >= record.setsPlanned);
-    if (sameLoad && repTrend && adequateRir && complete) {
-      const load = recent[0].record.load!;
-      const increment = load < 20 ? 1 : load < 60 ? 2 : 2.5;
-      return { exerciseId, action: "increase", confidence, score: 82, suggestedLoad: Math.round((load + increment) * 2) / 2, reasons: ["Aumentamos a referência porque três sessões mantiveram ou elevaram repetições com séries completas e margem adequada."] };
-    }
-  }
-  return { exerciseId, action: "maintain", confidence, score: 58, reasons: ["Mantivemos a carga de referência para consolidar repetições, técnica e esforço antes do próximo aumento."] };
+  return { ...decisionBase, action: "maintain", confidence, score: valid.length >= 3 ? 62 : 58, reasons: [inferredRepRange ? "Mantivemos a carga até todas as séries alcançarem o topo da faixa com esforço adequado." : "Mantivemos a carga porque o histórico ainda não informa uma faixa de repetições comparável."] };
 }
 
 export function decideVolume(history: TrainingHistoryLike[]): AdaptiveDecision {
   const sessions = attended(history).slice(0, 8);
   const confidence = confidenceFromScore(clamp(sessions.length / 8, 0, 1));
-  if (sessions.length < 4) return { action: "maintain", confidence, score: 50, reasons: ["O volume foi mantido porque ainda há menos de quatro sessões comparáveis."] };
-  const completion = sessions.map(completionRatio).filter((value): value is number => value !== null);
-  const averageCompletion = completion.length ? completion.reduce((sum, value) => sum + value, 0) / completion.length : 0.75;
+  const base = { source: "session" as const, affectedEntity: "weekly-volume" };
+  if (sessions.length < 4) return { ...base, action: "maintain", confidence, score: 50, reasons: ["O volume foi mantido porque ainda há menos de quatro sessões comparáveis."] };
+  const quality = sessions.map((item) => item.sessionQualityScore ?? calculateSessionQuality({ exercises: (item.exerciseRecords || []).map((record, index) => ({ priority: record.priority || (index < 2 ? "A" : index < 5 ? "B" : "C"), completed: record.setsCompleted >= record.setsPlanned })), effectiveSetsPerformed: (item.exerciseRecords || []).reduce((sum, record) => sum + record.setsCompleted, 0), effectiveSetsPrescribed: (item.exerciseRecords || []).reduce((sum, record) => sum + record.setsPlanned, 0), painScore: item.painScore, symptoms: item.symptoms, durationMinutes: item.durationMinutes }).score / 100);
+  const averageCompletion = quality.length ? quality.reduce((sum, value) => sum + value, 0) / quality.length : 0.75;
   const highEffort = sessions.filter((item) => finite(item.sessionRpe) && item.sessionRpe >= 9).length;
   const recurringPain = sessions.filter((item) => finite(item.painScore) && item.painScore >= 4).length;
-  const poorRecovery = sessions.filter((item) => ["Piorou", "Muito cansada"].includes(item.recovery24h || "")).length;
-  if (averageCompletion < 0.65 || highEffort >= 3 || recurringPain >= 2 || poorRecovery >= 3) return { action: "reduce", confidence, score: 35, reasons: [recurringPain >= 2 ? "Reduzimos uma série porque houve dor recorrente nas sessões recentes." : "Reduzimos levemente o volume porque conclusão, esforço ou recuperação pioraram de forma repetida."] };
-  if (sessions.length >= 6 && averageCompletion >= 0.9 && highEffort === 0 && recurringPain === 0 && poorRecovery === 0) return { action: "increase", confidence, score: 80, reasons: ["Aumentamos uma série em exercícios prioritários porque seis sessões tiveram alta conclusão, recuperação estável e ausência de dor recorrente."] };
-  return { action: "maintain", confidence, score: 62, reasons: ["Mantivemos o volume: a resposta recente está adequada, mas ainda não justifica progressão adicional."] };
+  const poorRecovery = sessions.filter((item) => isPoorRecovery(item.recovery24h)).length;
+  if (averageCompletion < 0.65 || highEffort >= 3 || recurringPain >= 2 || poorRecovery >= 3) return { ...base, action: "reduce", confidence, score: 35, reasons: [recurringPain >= 2 ? "Reduzimos uma série porque houve dor recorrente nas sessões recentes." : "Reduzimos levemente o volume porque conclusão, esforço ou recuperação pioraram de forma repetida."] };
+  if (sessions.length >= 6 && averageCompletion >= 0.9 && highEffort === 0 && recurringPain === 0 && poorRecovery === 0) return { ...base, action: "progress", confidence, score: 80, reasons: ["Aumentamos uma série em exercícios prioritários porque seis sessões tiveram alta conclusão, recuperação estável e ausência de dor recorrente."] };
+  return { ...base, action: "maintain", confidence, score: 62, reasons: ["Mantivemos o volume: a resposta recente está adequada, mas ainda não justifica progressão adicional."] };
 }
 
 export function learnExercisePreferences(history: TrainingHistoryLike[]): LearnedExercisePreference[] {
@@ -180,20 +170,23 @@ export function learnExercisePreferences(history: TrainingHistoryLike[]): Learne
 export function calculateCycleReadiness(history: TrainingHistoryLike[], plannedFrequency: number): AdaptiveDecision {
   const sessions = attended(history).slice(0, 12);
   const confidence = confidenceFromScore(clamp(sessions.length / 12, 0, 1));
-  if (sessions.length < 6) return { action: "maintain", confidence, score: 50, reasons: ["O ciclo permanece estável até reunir pelo menos seis sessões."] };
+  const base = { source: "cycle" as const, affectedEntity: "current-cycle", loop: "slow" as const };
+  if (sessions.length < 6) return { ...base, action: "maintain", confidence, score: 50, reasons: ["O ciclo permanece estável até reunir pelo menos seis sessões."] };
   const completionValues = sessions.map(completionRatio).filter((value): value is number => value !== null);
   const completion = completionValues.length ? completionValues.reduce((sum, value) => sum + value, 0) / completionValues.length : 0.7;
   const behavior = actualTrainingBehavior(sessions);
   const adherence = clamp(behavior.weeklyFrequency / Math.max(1, plannedFrequency), 0, 1);
   const records = sessions.flatMap((item) => item.exerciseRecords || []);
   const performance = records.length ? records.filter((item) => item.setsCompleted >= item.setsPlanned).length / records.length : completion;
-  const recovery = 1 - clamp(sessions.filter((item) => ["Piorou", "Muito cansada"].includes(item.recovery24h || "")).length / Math.max(1, sessions.length / 3), 0, 1);
+  const qualityValues = sessions.map((item) => item.sessionQualityScore).filter((value): value is number => finite(value));
+  const sessionQuality = qualityValues.length ? qualityValues.reduce((sum, value) => sum + value, 0) / qualityValues.length / 100 : completion;
+  const recovery = 1 - clamp(sessions.filter((item) => isPoorRecovery(item.recovery24h)).length / Math.max(1, sessions.length / 3), 0, 1);
   const effort = 1 - clamp(sessions.filter((item) => finite(item.sessionRpe) && item.sessionRpe >= 9).length / Math.max(1, sessions.length / 3), 0, 1);
   const pain = 1 - clamp(sessions.filter((item) => finite(item.painScore) && item.painScore >= 4).length / Math.max(1, sessions.length / 3), 0, 1);
-  const score = Math.round((adherence * 0.25 + completion * 0.2 + performance * 0.2 + recovery * 0.15 + effort * 0.1 + pain * 0.1) * 100);
-  if (score >= 75) return { action: "increase", confidence, score, reasons: ["O ciclo pode progredir: aderência, conclusão, desempenho e recuperação superaram o limite de 75 pontos."] };
-  if (score < 50) return { action: "reduce", confidence, score, reasons: ["O próximo bloco será de recuperação porque o score de prontidão ficou abaixo de 50 pontos."] };
-  return { action: "maintain", confidence, score, reasons: ["O ciclo será mantido para consolidar o resultado antes de progredir."] };
+  const score = Math.round((adherence * 0.25 + completion * 0.15 + performance * 0.15 + sessionQuality * 0.1 + recovery * 0.15 + effort * 0.1 + pain * 0.1) * 100);
+  if (score >= 75) return { ...base, action: "progress", confidence, score, reasons: ["O ciclo pode progredir: aderência, conclusão, desempenho e recuperação superaram o limite de 75 pontos."] };
+  if (score < 50) return { ...base, action: "reduce", confidence, score, reasons: ["O próximo bloco será de recuperação porque o score de prontidão ficou abaixo de 50 pontos."] };
+  return { ...base, action: "maintain", confidence, score, reasons: ["O ciclo será mantido para consolidar o resultado antes de progredir."] };
 }
 
 function declaredDuration(profile: ProfileForGeneration): number {
@@ -217,5 +210,5 @@ export function buildAdaptivePlan(profile: ProfileForGeneration, history: Traini
   if (canAdaptSchedule && effectiveDays !== declaredDays) reasons.push(`Ajustamos o próximo ciclo para ${effectiveDays} dias porque sua frequência real recente foi ${behavior.weeklyFrequency.toFixed(1)} por semana.`);
   if (canAdaptSchedule && Math.abs(effectiveDurationMinutes - declaredMinutes) >= 5) reasons.push(`Priorizamos sessões de cerca de ${effectiveDurationMinutes} minutos com base na duração das últimas sessões.`);
   reasons.push(...volume.reasons, ...cycle.reasons);
-  return { effectiveDays, effectiveDurationMinutes, volume, cycle, confidence: confidence.level, confidenceScore: confidence.score, reasons: [...new Set(reasons)], preferences: learnExercisePreferences(history) };
+  return { effectiveDays, effectiveDurationMinutes, volume, cycle, confidence: confidence.level, confidenceScore: confidence.score, reasons: [...new Set(reasons)], preferences: learnExercisePreferences(history), calibrationStatus: confidence.level === "high" && attended(history).length >= 8 ? "calibrated" : "calibrating" };
 }

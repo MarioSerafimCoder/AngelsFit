@@ -1,4 +1,8 @@
 import type { GeneratedWorkout } from "./workout-engine";
+import { normalizeRecovery24h, type Recovery24h } from "./domain/recovery.ts";
+import { calculateSessionQuality } from "./domain/session-quality.ts";
+import type { ExercisePriority } from "./domain/types.ts";
+import { normalizeSubstitutionReason, type SubstitutionReason } from "./domain/substitution-reason.ts";
 
 export type TrainingSessionStatus = "planned" | "in_progress" | "completed" | "partial" | "skipped" | "repeated" | "interrupted" | "manually_advanced" | "attendance_legacy";
 
@@ -26,13 +30,29 @@ export type ExercisePerformanceRecord = {
   setsCompleted: number;
   repetitions: number;
   load: number;
-  rirOrRpe: number;
+  rirOrRpe?: number;
   restTime: number;
   technique: string;
   executionFeedback: "adequate" | "limited" | "unknown";
   painReported: boolean;
   substitutedExerciseId?: string;
+  substitutionReason?: SubstitutionReason;
+  priority?: ExercisePriority;
+  targetRepRange?: string;
+  targetRir?: number;
   sets?: SeriesPerformanceRecord[];
+};
+
+export type PainEvent = {
+  exerciseId: string;
+  plannedExerciseId?: string;
+  region: string;
+  intensity: number;
+  type?: "muscular" | "joint" | "nerve" | "unknown";
+  timing?: "during" | "after" | "next_day";
+  duration?: "brief" | "hours" | "days";
+  recurrence?: number;
+  recordedAt: string;
 };
 
 export type TrainingHistoryLike = {
@@ -54,7 +74,9 @@ export type TrainingHistoryLike = {
   averageRir?: number;
   painScore?: number;
   symptoms?: string[];
-  recovery24h?: string;
+  recovery24h?: Recovery24h | string;
+  sessionQualityScore?: number;
+  painEvents?: PainEvent[];
   totalVolumeKg?: number;
   exerciseRecords?: ExercisePerformanceRecord[];
   wasRepeated?: boolean;
@@ -200,7 +222,22 @@ export function migrateTrainingHistory(history: TrainingHistoryLike[]): Training
       wasRepeated: item.wasRepeated || status === "repeated",
       wasSkipped: item.wasSkipped || status === "skipped",
       wasManuallyAdvanced: item.wasManuallyAdvanced || status === "manually_advanced",
-      exerciseRecords: item.exerciseRecords || [],
+      exerciseRecords: (item.exerciseRecords || []).map((record) => {
+        const completedSets = (record.sets || []).filter((set) => set.completed);
+        const recordedRir = completedSets.map((set) => set.rir).filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+        const missingRirStoredAsZero = record.rirOrRpe === 0 && completedSets.length > 0 && recordedRir.length === 0;
+        return { ...record, rirOrRpe: recordedRir.length ? recordedRir.reduce((sum, value) => sum + value, 0) / recordedRir.length : missingRirStoredAsZero ? undefined : record.rirOrRpe, substitutionReason: record.substitutionReason ? normalizeSubstitutionReason(record.substitutionReason) : undefined };
+      }),
+      recovery24h: normalizeRecovery24h(item.recovery24h),
+      sessionQualityScore: item.sessionQualityScore ?? calculateSessionQuality({
+        exercises: (item.exerciseRecords || []).map((record, index) => ({ priority: record.priority || (index < 2 ? "A" : index < 5 ? "B" : "C"), completed: record.setsCompleted >= Math.max(1, record.setsPlanned) })),
+        effectiveSetsPerformed: (item.exerciseRecords || []).reduce((sum, record) => sum + record.setsCompleted, 0),
+        effectiveSetsPrescribed: (item.exerciseRecords || []).reduce((sum, record) => sum + record.setsPlanned, 0),
+        painScore: item.painScore,
+        symptoms: item.symptoms,
+        durationMinutes: item.durationMinutes,
+      }).score,
+      painEvents: item.painEvents || [],
     };
     cursor += advance;
     return migratedItem;
@@ -254,7 +291,7 @@ export function buildCalendarSchedule(options: { startDate: Date; days: number; 
     const date = new Date(start);
     date.setDate(start.getDate() + index);
     const weekdayShort = DAY_LABELS[date.getDay()];
-    const isTrainingDay = index === 0 || options.availableDays.includes(weekdayShort);
+    const isTrainingDay = options.availableDays.includes(weekdayShort);
     const workout = isTrainingDay && options.workouts.length
       ? options.workouts[(options.recommendedIndex + trainingOffset) % options.workouts.length]
       : null;
@@ -354,7 +391,7 @@ export function evaluatePhase(history: TrainingHistoryLike[], adherence: Adheren
   const completedInPhase = completed.length % requiredSessions;
   const window = completed.slice(0, requiredSessions);
   const recurringPain = window.filter((item) => (item.painScore || 0) >= 4).length >= 2;
-  const poorRecovery = window.filter((item) => ["Piorou", "Muito cansada"].includes(item.recovery24h || "")).length > Math.max(1, window.length / 3);
+  const poorRecovery = window.filter((item) => ["worse", "very_fatigued"].includes(normalizeRecovery24h(item.recovery24h) || "")).length > Math.max(1, window.length / 3);
   const lowCompletion = window.filter((item) => (item.completedExercises || 0) / Math.max(1, item.totalExercises || 1) < 0.7).length > Math.max(1, window.length / 3);
   if (window.length < requiredSessions) return { phaseNumber, completedInPhase, requiredSessions, action: "maintain", reason: `Mantivemos a fase: ${requiredSessions - window.length} sessões concluídas ainda são necessárias para consolidar o bloco.` };
   if (adherence.adherencePercentage < 60 || recurringPain || poorRecovery || lowCompletion) return { phaseNumber: Math.max(1, phaseNumber - 1), completedInPhase: requiredSessions, requiredSessions, action: "repeat", reason: recurringPain ? "Repetiremos a fase porque houve dor moderada ou forte de forma recorrente." : poorRecovery ? "Repetiremos a fase porque a recuperação recente ainda não está adequada." : lowCompletion ? "Repetiremos a fase porque muitos exercícios principais não foram concluídos." : "Repetiremos a fase para recuperar regularidade antes de aumentar a complexidade." };

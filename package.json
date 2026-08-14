@@ -8,13 +8,25 @@
   "scripts": {
     "dev": "vinext dev",
     "build": "vinext build",
+    "build:android-web": "vite build --config native-vite.config.ts",
+    "android:sync": "npm run build:android-web && cap sync android",
+    "android:apk": "npm run android:sync && cd android && gradlew assembleRelease",
     "start": "vinext start",
     "test": "npm run build && node --test tests/*.test.mjs",
-    "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
+    "lint": "eslint . --ignore-pattern dist --ignore-pattern .next --ignore-pattern native-dist --ignore-pattern android/app/src/main/assets --ignore-pattern android/app/build --ignore-pattern android/build",
     "typecheck": "tsc --noEmit",
     "db:generate": "drizzle-kit generate"
   },
   "dependencies": {
+    "@capacitor/android": "^8.5.0",
+    "@capacitor/app": "^8.0.1",
+    "@capacitor/browser": "^8.0.1",
+    "@capacitor/core": "^8.5.0",
+    "@capacitor/filesystem": "^8.1.2",
+    "@capacitor/haptics": "^8.0.1",
+    "@capacitor/local-notifications": "^8.2.1",
+    "@capacitor/share": "^8.0.1",
+    "@capacitor/status-bar": "^8.0.1",
     "blake3-wasm": "^2.1.5",
     "drizzle-orm": "0.45.2",
     "next": "^16.3.0",
@@ -22,6 +34,7 @@
     "react-dom": "^19.2.8"
   },
   "devDependencies": {
+    "@capacitor/cli": "^8.5.0",
     "@cloudflare/vite-plugin": "^1.51.3",
     "@cloudflare/workers-types": "^5.20260811.1",
     "@tailwindcss/postcss": "4.2.1",

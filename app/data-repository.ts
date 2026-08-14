@@ -1,4 +1,4 @@
-export const DATA_SCHEMA_VERSION = 6;
+export const DATA_SCHEMA_VERSION = 8;
 
 export const CRITICAL_STORAGE_KEYS = {
   profile: "fitlocal.profile.v1",
@@ -97,7 +97,7 @@ export function isValidCheckIns(value: unknown): boolean {
 
 export function isValidActiveSession(value: unknown): boolean {
   return isObject(value)
-    && (value.schemaVersion === 1 || value.schemaVersion === 2)
+    && (value.schemaVersion === 1 || value.schemaVersion === 2 || value.schemaVersion === 3)
     && isString(value.id)
     && isString(value.status)
     && isString(value.createdAt)
@@ -175,6 +175,7 @@ function quarantine(storage: SyncKeyValueStorage, key: string, payload: string):
 export class CriticalDataRepository {
   private readonly primary: SyncKeyValueStorage;
   private readonly mirror?: AsyncRecordMirror;
+  private readonly mirrorQueues = new Map<string, Promise<void>>();
 
   constructor(
     primary: SyncKeyValueStorage,
@@ -225,18 +226,20 @@ export class CriticalDataRepository {
     if (!descriptor.validate(value)) throw new Error(`Invalid critical record: ${recordName}`);
     const payload = JSON.stringify(value);
     this.primary.setItem(descriptor.key, payload);
-    await this.saveMirror(descriptor.key, payload);
+    await this.queueMirrorMutation(descriptor.key, () => this.saveMirror(descriptor.key, payload));
   }
 
   async remove(recordName: CriticalRecordName): Promise<void> {
     const key = RECORDS[recordName].key;
     this.primary.removeItem(key);
-    if (!this.mirror) return;
-    try {
-      await this.mirror.remove(key);
-    } catch {
-      // A later successful write will reconcile the structured mirror.
-    }
+    await this.queueMirrorMutation(key, async () => {
+      if (!this.mirror) return;
+      try {
+        await this.mirror.remove(key);
+      } catch {
+        // A later successful write will reconcile the structured mirror.
+      }
+    });
   }
 
   async replaceAll(data: CriticalData): Promise<void> {
@@ -324,6 +327,15 @@ export class CriticalDataRepository {
     } catch {
       return null;
     }
+  }
+
+  private queueMirrorMutation(key: string, mutation: () => Promise<void>): Promise<void> {
+    const previous = this.mirrorQueues.get(key) || Promise.resolve();
+    const next = previous.catch(() => undefined).then(mutation);
+    this.mirrorQueues.set(key, next);
+    return next.finally(() => {
+      if (this.mirrorQueues.get(key) === next) this.mirrorQueues.delete(key);
+    });
   }
 }
 

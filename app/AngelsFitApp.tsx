@@ -1,6 +1,6 @@
 "use client";
 
-/* eslint-disable react-hooks/set-state-in-effect */
+/* eslint-disable react-hooks/set-state-in-effect, @next/next/no-img-element */
 
 import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { exercises, exerciseById, exerciseMuscleGroups, EXERCISE_DATABASE_VERSION } from "./workout-data";
@@ -9,15 +9,30 @@ import { exerciseMediaQueries } from "./exercise-media-queries";
 import { GeneratedProgram, GeneratedWorkout, detectSafetyCodes, generateProgram, specialConditionOptions } from "./workout-engine";
 import { BodyMeasurement, bmiCategory, calculateAge, calculateBmi, epleyEstimatedOneRepMax, estimateRestingEnergy, formatMetric, waistRatioCategory, waistToHeightRatio } from "./performance-metrics";
 import { getBrowserDataRepository } from "./data-repository";
-import { ActiveWorkoutSession, SeriesPerformance, addRestSeconds, beginActiveSession, clearRestNotice, completeRest, completeSeriesPerformance, enterFeedback, getElapsedSeconds, getRestRemainingSeconds, hasMeaningfulSessionActivity, normalizeActiveWorkoutSession, patchActiveSession, patchSeriesPerformance, pauseRest, reopenSeriesPerformance, resumeRest, seriesPerformances, sessionCompletionProgress, skipRest, startRest, createActiveWorkoutSession, summarizeActiveSession } from "./active-session";
+import { ActiveWorkoutSession, SeriesPerformance, addRestSeconds, beginActiveSession, clearRestNotice, completeRest, completeSeriesPerformance, enterFeedback, getElapsedSeconds, getRestRemainingSeconds, hasMeaningfulSessionActivity, normalizeActiveWorkoutSession, normalizeCardioIntensity, patchActiveSession, patchSeriesPerformance, pauseRest, reopenSeriesPerformance, resumeRest, seriesPerformances, sessionCompletionProgress, skipRest, startRest, createActiveWorkoutSession, summarizeActiveSession, type CardioIntensity } from "./active-session";
 import { APP_VERSION, CONTENT_VERSION, CURRENT_DATA_SCHEMA_VERSION, LAST_UPDATE_CHECK_KEY, MINIMUM_SUPPORTED_APP_VERSION, compareVersions, runDataMigrations, validateVersionMetadata } from "./versioning";
-import { configureNativeChrome, getInstalledAppVersion, hapticImpact, isIosDevice, isNativeApp, openExternal, registerNativeBackButton } from "./native-platform";
+import { configureNativeChrome, getInstalledAppVersion, hapticImpact, isIosDevice, isNativeApp, openExternal, registerNativeBackButton, requestRestNotificationPermission, shareNativeBackup, showRestNotification } from "./native-platform";
 import { applyReturnAdaptation, buildCalendarSchedule, buildWeeklyMuscleVolume, calculateAdherence, completedSequenceCount, eligibleProtocols, getReturnAdaptation, isAttendedTrainingSession, mergeLegacyCheckIns, migrateTrainingHistory, normalizedTrainingStatus, recommendedWorkoutIndex, trainingStatusLabel, toLocalDateKey, type ExercisePerformanceRecord, type SeriesPerformanceRecord, type TrainingHistoryLike, type TrainingSessionStatus } from "./training-intelligence";
 import { BACKUP_FORMAT_VERSION, BackupValidationError, MAX_BACKUP_FILE_SIZE, parseBackupJson, type ParsedBackup } from "./backup";
 import { rankExerciseSubstitutions } from "./exercise-substitution";
 import { exerciseTrackingMode, isUnilateralExercise, seriesHasTrackingData, seriesPerformanceLabel, seriesVolume } from "./series-tracking";
+import { RECOVERY_LABELS, type Recovery24h } from "./domain/recovery";
+import { resolveEffectiveSchedule, resolveSequenceSelection } from "./domain/schedule";
+import { calculateSessionQuality, qualifySessionCompletion } from "./domain/session-quality";
+import { CONFIDENCE_COPY } from "./domain/types";
+import { inferPassiveReadiness } from "./domain/readiness";
+import type { SubstitutionReason } from "./domain/substitution-reason";
 
 type AppTab = "today" | "program" | "exercises" | "progress" | "profile";
+
+const CARDIO_LABELS: Record<CardioIntensity, string> = { none: "Sem cardio hoje", light: "Leve", moderate: "Moderada", vigorous: "Intensa" };
+const POSTPONED_WORKOUT_KEY = "angelsfit.postponed-workout.v1";
+const RELEASES_URL = "https://github.com/MarioSerafimCoder/AngelsFit/releases";
+const REMOTE_VERSION_URL = "https://fitlocal-mario.mario-92.chatgpt.site/version.json";
+
+function cardioLabel(value: unknown): string {
+  return CARDIO_LABELS[normalizeCardioIntensity(value)];
+}
 
 type Profile = {
   id: "mario";
@@ -69,7 +84,7 @@ type WorkoutHistory = TrainingHistoryLike & {
   averageRir?: number;
   painScore?: number;
   symptoms?: string[];
-  recovery24h?: string;
+  recovery24h?: Recovery24h | string;
   periodizationTrack?: string;
   status?: TrainingSessionStatus;
 };
@@ -271,7 +286,7 @@ export default function AngelsFitApp() {
     const captureInstallPrompt = (event: Event) => { event.preventDefault(); setInstallPrompt(event as InstallPromptEvent); };
     window.addEventListener("beforeinstallprompt", captureInstallPrompt);
     let refreshWorker: (() => void) | undefined;
-    if ("serviceWorker" in navigator) {
+    if (!isNativeApp() && "serviceWorker" in navigator) {
       refreshWorker = () => {
         if (!navigator.onLine || document.visibilityState === "hidden") return;
         void navigator.serviceWorker.getRegistration().then((registration) => registration?.update()).catch(() => undefined);
@@ -406,7 +421,7 @@ export default function AngelsFitApp() {
     window.setTimeout(() => setSavedMessage(""), 2600);
   }
 
-  function registerRecovery24h(historyId: string, response: string) {
+  function registerRecovery24h(historyId: string, response: Recovery24h) {
     const nextHistory = history.map((item) => item.id === historyId ? { ...item, recovery24h: response } : item);
     setHistory(nextHistory);
     void getBrowserDataRepository().write("history", nextHistory);
@@ -429,7 +444,7 @@ export default function AngelsFitApp() {
     setDiscardProfilePrompt(false);
   }
 
-  function exportBackup() {
+  async function exportBackup() {
     if (!profile) return;
     const backup = {
       app: "AngelsFit",
@@ -446,18 +461,48 @@ export default function AngelsFitApp() {
       activeSession,
       settings: { theme, preferences },
     };
-    const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
+    const contents = JSON.stringify(backup, null, 2);
+    const filename = `angelsfit-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    if (await shareNativeBackup(filename, contents)) {
+      setSavedMessage("Backup pronto para salvar ou compartilhar");
+      window.setTimeout(() => setSavedMessage(""), 3000);
+      return;
+    }
+    const blob = new Blob([contents], { type: "application/json" });
+    const backupFile = new File([blob], filename, { type: "application/json" });
+    const shareNavigator = navigator as Navigator & { canShare?: (data: ShareData) => boolean };
+    if (navigator.share && shareNavigator.canShare?.({ files: [backupFile] })) {
+      try {
+        await navigator.share({ title: "Backup do AngelsFit", files: [backupFile] });
+        setSavedMessage("Backup compartilhado com segurança");
+        window.setTimeout(() => setSavedMessage(""), 3000);
+        return;
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") return;
+      }
+    }
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = `angelsfit-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    link.download = filename;
+    document.body.appendChild(link);
     link.click();
-    URL.revokeObjectURL(url);
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    setSavedMessage("Backup salvo no aparelho");
+    window.setTimeout(() => setSavedMessage(""), 3000);
   }
 
   async function toggleRestNotifications() {
     if (preferences.restNotifications) {
       changePreference("restNotifications", false);
+      return;
+    }
+    if (isNativeApp()) {
+      const granted = await requestRestNotificationPermission();
+      changePreference("restNotifications", granted);
+      setSavedMessage(granted ? "Avisos de descanso ativados" : "Permissão de notificação não concedida");
+      window.setTimeout(() => setSavedMessage(""), 3000);
       return;
     }
     if (typeof Notification === "undefined") {
@@ -614,12 +659,14 @@ export default function AngelsFitApp() {
       setSavedMessage("O treino em andamento foi retomado");
       return;
     }
+    const previousWorkout = history.find((item) => isAttendedTrainingSession(item));
+    const passiveReadiness = inferPassiveReadiness(history);
     const session = beginActiveSession(createActiveWorkoutSession(workout, Date.now(), {
       plannedDate: options.plannedDate || toLocalDateKey(new Date()),
       sequenceNumber: options.sequenceNumber || completedSequenceCount(history) + 1,
       sequenceAdvance: options.sequenceAdvance ?? 1,
       sequenceAction: options.sequenceAction || "recommended",
-    }), Date.now());
+    }), Date.now(), previousWorkout, passiveReadiness.level);
     setActiveSession(session);
     setSessionOpen(true);
     void getBrowserDataRepository().write("activeSession", session);
@@ -681,22 +728,30 @@ export default function AngelsFitApp() {
         setsCompleted: completedSets,
         repetitions,
         load: loads.length ? Math.max(...loads) : 0,
-        rirOrRpe: rirValues.length ? rirValues.reduce((sum, value) => sum + value, 0) / rirValues.length : 0,
+        rirOrRpe: rirValues.length ? rirValues.reduce((sum, value) => sum + value, 0) / rirValues.length : undefined,
         restTime: actualRests.length ? Math.round(actualRests.reduce((sum, value) => sum + value, 0) / actualRests.length) : item.rest,
         technique: "padrão",
         executionFeedback: completedSets >= plannedSets ? "adequate" : completedSets > 0 ? "limited" : "unknown",
-        painReported: normalizedSession.painEvents.some((event) => event.exerciseId === item.exercise.id),
+        painReported: normalizedSession.painEvents.some((event) => event.exerciseId === performedExercise.id || event.plannedExerciseId === item.exercise.id),
         substitutedExerciseId: substitution?.toExerciseId,
+        substitutionReason: substitution?.reason,
+        priority: item.priority,
+        targetRepRange: item.reps,
+        targetRir: 2,
         sets: setRecords,
       };
     });
-    const finalStatus: TrainingSessionStatus = status !== "completed"
-      ? status
-      : completion.moreThanHalf
-        ? "completed"
-        : completion.completedSeries > 0
-          ? "partial"
-          : "interrupted";
+    const sessionQualityScore = calculateSessionQuality({
+      exercises: exerciseRecords.map((record, index) => ({ priority: record.priority || (index < 2 ? "A" : index < 5 ? "B" : "C"), completed: record.setsCompleted >= record.setsPlanned })),
+      effectiveSetsPerformed: exerciseRecords.reduce((sum, record) => sum + record.setsCompleted, 0),
+      effectiveSetsPrescribed: exerciseRecords.reduce((sum, record) => sum + record.setsPlanned, 0),
+      effortWithinTargetRatio: metrics.sessionRpe === undefined ? undefined : metrics.sessionRpe >= 5 && metrics.sessionRpe <= 8 ? 1 : 0.45,
+      painScore: metrics.painScore,
+      symptoms: metrics.symptoms,
+      durationMinutes: Math.max(1, Math.round(metrics.elapsedSeconds / 60)),
+      targetDurationMinutes: workout.targetMinutes || workout.estimatedMinutes,
+    }).score;
+    const finalStatus: TrainingSessionStatus = status !== "completed" ? status : qualifySessionCompletion(completion.completedSeries, completion.totalSeries, sessionQualityScore);
     const record: WorkoutHistory = {
       id: normalizedSession.id,
       workoutId: workout.id,
@@ -719,6 +774,8 @@ export default function AngelsFitApp() {
       averageRir: metrics.averageRir,
       painScore: metrics.painScore,
       symptoms: metrics.symptoms,
+      painEvents: normalizedSession.painEvents,
+      sessionQualityScore,
       status: finalStatus,
       exerciseRecords,
       wasRepeated: normalizedSession.sequenceAction === "repeated",
@@ -768,7 +825,8 @@ export default function AngelsFitApp() {
       const repository = getBrowserDataRepository();
       if (activeSession) await repository.write("activeSession", activeSession);
       await repository.createSnapshot();
-      const response = await fetch(`/version.json?check=${Date.now()}`, { cache: "no-store" });
+      const versionUrl = isNativeApp() ? REMOTE_VERSION_URL : "/version.json";
+      const response = await fetch(`${versionUrl}?check=${Date.now()}`, { cache: "no-store" });
       if (!response.ok) throw new Error("Version metadata unavailable");
       const metadata: unknown = await response.json();
       if (!validateVersionMetadata(metadata)) throw new Error("Invalid version metadata");
@@ -782,6 +840,10 @@ export default function AngelsFitApp() {
         return;
       }
       if (compareVersions(metadata.contentVersion, CONTENT_VERSION) > 0) {
+        if (isNativeApp()) {
+          setUpdateStatus("native-required");
+          return;
+        }
         setUpdateStatus("available");
         registration?.waiting?.postMessage({ type: "SKIP_WAITING" });
         if ("caches" in globalThis) {
@@ -943,20 +1005,31 @@ function WorkoutBlockOverview({ title, items, block }: { title: string; items: G
   return <section className={`workout-block block-${block}`}><header><span aria-hidden="true">{block === "warmup" ? "01" : block === "main" ? "02" : "03"}</span><div><small>BLOCO</small><strong>{title}</strong></div></header><div>{items.map((item) => <article key={item.exercise.id}><div><strong>{item.exercise.name}</strong><small>{item.exercise.equipment}</small></div><b>{item.sets}× {item.reps}</b></article>)}</div></section>;
 }
 
-function Today({ profile, online, setTab, onEditProfile, program, startWorkout, skipWorkout, activeSession, continueWorkout, endWorkout, history, onRecovery24h }: { profile: Profile; online: boolean; setTab: (tab: AppTab) => void; onEditProfile: () => void; program: GeneratedProgram; startWorkout: (workout: GeneratedWorkout, options?: Partial<Pick<ActiveWorkoutSession, "plannedDate" | "sequenceNumber" | "sequenceAdvance" | "sequenceAction">>) => void; skipWorkout: (workout: GeneratedWorkout, plannedDate: string, sequenceNumber: number) => void; activeSession: ActiveWorkoutSession | null; continueWorkout: () => void; endWorkout: () => void; history: WorkoutHistory[]; onRecovery24h: (historyId: string, response: string) => void }) {
+function Today({ profile, online, setTab, onEditProfile, program, startWorkout, skipWorkout, activeSession, continueWorkout, endWorkout, history, onRecovery24h }: { profile: Profile; online: boolean; setTab: (tab: AppTab) => void; onEditProfile: () => void; program: GeneratedProgram; startWorkout: (workout: GeneratedWorkout, options?: Partial<Pick<ActiveWorkoutSession, "plannedDate" | "sequenceNumber" | "sequenceAdvance" | "sequenceAction">>) => void; skipWorkout: (workout: GeneratedWorkout, plannedDate: string, sequenceNumber: number) => void; activeSession: ActiveWorkoutSession | null; continueWorkout: () => void; endWorkout: () => void; history: WorkoutHistory[]; onRecovery24h: (historyId: string, response: Recovery24h) => void }) {
   const [now] = useState(() => new Date());
   const recommendedIndex = recommendedWorkoutIndex(history, program.workouts.length);
-  const calendar = useMemo(() => buildCalendarSchedule({ startDate: now, days: 10, availableDays: profile.days, workouts: program.workouts, recommendedIndex }), [now, profile.days, program.workouts, recommendedIndex]);
+  const effectiveSchedule = useMemo(() => resolveEffectiveSchedule(profile.days, program.effectiveDays || 3), [profile.days, program.effectiveDays]);
+  const calendar = useMemo(() => buildCalendarSchedule({ startDate: now, days: 10, availableDays: effectiveSchedule, workouts: program.workouts, recommendedIndex }), [now, effectiveSchedule, program.workouts, recommendedIndex]);
   const [selectedDateKey, setSelectedDateKey] = useState(() => toLocalDateKey(now));
+  const [postponedDateKey, setPostponedDateKey] = useState<string | null>(() => {
+    try {
+      const parsed = JSON.parse(window.localStorage.getItem(POSTPONED_WORKOUT_KEY) || "null") as { dateKey?: string } | null;
+      return parsed?.dateKey && parsed.dateKey >= toLocalDateKey(now) ? parsed.dateKey : null;
+    } catch {
+      return null;
+    }
+  });
   const [adaptationChoice, setAdaptationChoice] = useState<"pending" | "accepted" | "ignored">("pending");
   const [protocolChoice, setProtocolChoice] = useState<"pending" | "accepted" | "ignored">("pending");
   const selectedDay = calendar.find((day) => day.dateKey === selectedDateKey) || calendar[0];
-  const workout = selectedDay?.workout || null;
-  const adherence = calculateAdherence(history, now, profile.days);
+  const postponed = selectedDay?.dateKey === postponedDateKey;
+  const workout = postponed ? program.workouts[recommendedIndex] || null : selectedDay?.workout || null;
+  const sequenceSelection = resolveSequenceSelection(selectedDay?.sequenceOffset || 0, postponed);
+  const adherence = calculateAdherence(history, now, effectiveSchedule);
   const returnAdaptation = getReturnAdaptation(history, now);
   const protocols = eligibleProtocols({ experience: program.effectiveExperience, recovery: program.recoveryClass, adherencePercentage: adherence.adherencePercentage, painScore: Math.max(...history.slice(0, 3).map((item) => item.painScore || 0), 0), inactivityDays: returnAdaptation.inactivityDays, sessionsThisWeek: history.filter((item) => now.getTime() - new Date(item.completedAt).getTime() <= 7 * 86_400_000).length });
   const suggestedProtocol = protocols[0];
-  const sequenceNumber = completedSequenceCount(history) + (selectedDay?.sequenceOffset || 0) + 1;
+  const sequenceNumber = completedSequenceCount(history) + (postponed ? 0 : selectedDay?.sequenceOffset || 0) + 1;
   const selectedLabel = selectedDay ? new Intl.DateTimeFormat("pt-BR", { weekday: "long", day: "2-digit", month: "long" }).format(selectedDay.date) : todayLabel();
   const pendingRecovery = history.find((item) => !item.recovery24h && now.getTime() - new Date(item.completedAt).getTime() >= 12 * 3_600_000 && now.getTime() - new Date(item.completedAt).getTime() <= 72 * 3_600_000);
   const activeSummary = activeSession ? summarizeActiveSession(activeSession, now.getTime()) : null;
@@ -965,30 +1038,35 @@ function Today({ profile, online, setTab, onEditProfile, program, startWorkout, 
     if (!workout || !selectedDay) return;
     let prepared = adaptationChoice === "accepted" ? applyReturnAdaptation(workout, returnAdaptation) : workout;
     if (protocolChoice === "accepted" && suggestedProtocol) prepared = { ...prepared, notices: [...prepared.notices, `${suggestedProtocol.name}: ${suggestedProtocol.explanation}`] };
-    const offSequence = selectedDay.sequenceOffset > 0;
+    const offSequence = sequenceSelection.action === "manually_advanced";
     if (offSequence) prepared = { ...prepared, notices: [...prepared.notices, "Treino escolhido fora da sequência sugerida; sua escolha foi preservada."] };
-    startWorkout(prepared, { plannedDate: selectedDay.dateKey, sequenceNumber, sequenceAdvance: offSequence ? selectedDay.sequenceOffset + 1 : 1, sequenceAction: offSequence ? "manually_advanced" : "recommended" });
+    if (postponed) window.localStorage.removeItem(POSTPONED_WORKOUT_KEY);
+    startWorkout(prepared, { plannedDate: selectedDay.dateKey, sequenceNumber, sequenceAdvance: sequenceSelection.sequenceAdvance, sequenceAction: sequenceSelection.action });
   };
-  const repeatPrevious = () => {
-    const previous = program.workouts[(recommendedIndex - 1 + program.workouts.length) % program.workouts.length];
-    if (previous) startWorkout(previous, { plannedDate: toLocalDateKey(now), sequenceNumber: Math.max(1, completedSequenceCount(history)), sequenceAdvance: 0, sequenceAction: "repeated" });
+  const postponeWorkout = () => {
+    const nextTrainingDay = calendar.find((day, index) => index > 0 && day.workout);
+    if (!nextTrainingDay) return;
+    setPostponedDateKey(nextTrainingDay.dateKey);
+    window.localStorage.setItem(POSTPONED_WORKOUT_KEY, JSON.stringify({ dateKey: nextTrainingDay.dateKey, workoutId: program.workouts[recommendedIndex]?.id, createdAt: new Date().toISOString() }));
+    setSelectedDateKey(nextTrainingDay.dateKey);
   };
   return (
     <section className="screen">
-      <ScreenHeader title={`Olá, ${profile.name.split(" ")[0]}`} kicker={todayLabel()} profile={profile} onProfileClick={onEditProfile} />
+      <ScreenHeader title={profile.name.trim() ? `Olá, ${profile.name.trim().split(" ")[0]}` : "Olá!"} kicker={todayLabel()} profile={profile} onProfileClick={onEditProfile} />
       <div className={`connection-pill ${online ? "online" : "offline"}`}><span />{online ? "Dados locais prontos" : "Modo offline"}</div>
       {activeSession && activeSummary && <article className="resume-session-card"><p>TREINO EM ANDAMENTO</p><h2>{activeSession.workout.name}</h2><span>{activeSummary.completedExercises} de {activeSummary.totalExercises} exercícios · última atividade {lastActiveMinutes < 1 ? "agora" : `há ${lastActiveMinutes} min`}</span><div><button className="resume-primary" onClick={continueWorkout}>Continuar treino</button><button onClick={endWorkout}>Encerrar sessão</button></div></article>}
-      {pendingRecovery && <article className="recovery-followup"><p>RESPOSTA DE 24 HORAS</p><h2>Como você ficou após {pendingRecovery.workoutName}?</h2><div>{["Melhor", "Igual", "Piorou", "Muito cansada"].map((response) => <button key={response} onClick={() => onRecovery24h(pendingRecovery.id, response)}>{response}</button>)}</div></article>}
+      {pendingRecovery && <article className="recovery-followup"><p>RECUPERAÇÃO 24H · OPCIONAL</p><h2>Como você recuperou do treino de ontem?</h2><div>{(Object.keys(RECOVERY_LABELS) as Recovery24h[]).map((response) => <button key={response} onClick={() => onRecovery24h(pendingRecovery.id, response)}>{RECOVERY_LABELS[response]}</button>)}</div></article>}
       <div className="week-strip" aria-label="Calendário de próximos treinos">{calendar.map((day) => <button type="button" key={day.dateKey} aria-pressed={selectedDay?.dateKey === day.dateKey} className={`${day.isToday ? "today" : ""} ${selectedDay?.dateKey === day.dateKey ? "selected" : ""} ${day.workout ? "training-day" : "rest-day"}`} onClick={() => setSelectedDateKey(day.dateKey)}><small>{day.weekdayShort}</small><span>{day.dayNumber}</span><em>{day.monthShort}</em>{day.workout && <i aria-hidden="true" />}</button>)}</div>
-      {workout ? <article className="hero-card workout-hero"><div className="hero-orbit" aria-hidden="true"><span>{workout.estimatedMinutes}</span></div><p>{selectedDay?.isToday ? "TREINO DO DIA" : "TREINO PLANEJADO"}</p><h2>{workout.name}</h2><span>{workout.focus} · {workout.main.length + workout.warmup.length + workout.cooldown.length} movimentos · estimativa real de {workout.estimatedMinutes} min dentro da sua janela de {workout.targetMinutes || workout.estimatedMinutes} min</span><small className="cycle-validity">{selectedLabel} · posição {sequenceNumber} da sequência</small><button onClick={() => activeSession ? continueWorkout() : beginSelectedWorkout()}>{activeSession ? "Continuar treino" : selectedDay?.sequenceOffset ? "Avançar e iniciar" : "Iniciar treino"} <b>→</b></button></article> : <article className="hero-card rest-hero"><div className="hero-orbit" aria-hidden="true"><span>☾</span></div><p>RECUPERAÇÃO</p><h2>Dia sem treino planejado</h2><span>{selectedLabel}. Escolha outro dia no calendário para consultar o próximo treino.</span></article>}
-      <div className="sequence-nav"><button onClick={repeatPrevious} disabled={!history.length || !program.workouts.length}>↶ Repetir anterior</button><button onClick={() => setSelectedDateKey(calendar[0]?.dateKey)}>Recomendado</button><button onClick={() => { const next = calendar.find((day) => day.sequenceOffset === 1 && day.workout); if (next) setSelectedDateKey(next.dateKey); }}>Próximo →</button></div>
+      {workout ? <article className="hero-card workout-hero"><div className="hero-orbit" aria-hidden="true"><span>{workout.estimatedMinutes}</span></div><p>{selectedDay?.isToday ? "TREINO DO DIA" : postponed ? "TREINO ADIADO" : "TREINO PLANEJADO"}</p><h2>{workout.name}</h2><span>{workout.focus} · {workout.main.length + workout.warmup.length + workout.cooldown.length} movimentos · estimativa real de {workout.estimatedMinutes} min dentro da sua janela de {workout.targetMinutes || workout.estimatedMinutes} min</span><small className="cycle-validity">{selectedLabel} · posição {sequenceNumber} da sequência</small><button onClick={() => activeSession ? continueWorkout() : beginSelectedWorkout()}>{activeSession ? "Continuar treino" : postponed ? "Iniciar treino adiado" : selectedDay?.sequenceOffset ? "Avançar e iniciar" : "Iniciar treino"} <b>→</b></button></article> : <article className="hero-card rest-hero"><div className="hero-orbit" aria-hidden="true"><span>☾</span></div><p>RECUPERAÇÃO</p><h2>Dia sem treino planejado</h2><span>{selectedLabel}. Escolha outro dia no calendário para consultar o próximo treino.</span></article>}
+      <div className="sequence-nav">{postponed && <button onClick={() => { window.localStorage.removeItem(POSTPONED_WORKOUT_KEY); setPostponedDateKey(null); setSelectedDateKey(calendar[0]?.dateKey); }}>Voltar ao recomendado</button>}<button onClick={postponeWorkout}>Adiar para outro dia →</button></div>
       <article className="recommendation-card"><p>POR QUE ESTE TREINO?</p><strong>{program.recommendationReason || "A sessão segue sua sequência registrada."}</strong><span>{program.periodization ? `Ciclo ${program.periodization.cycleNumber} · semana ${program.periodization.cycleWeek} de ${program.periodization.cycleLengthWeeks} · ${program.periodization.phase}` : `Fase ${program.cycleNumber}`}</span></article>
+      <article className="personalization-card"><p>O QUE MUDOU PARA VOCÊ</p><strong>{program.adaptiveReasons?.[0] || program.progressionNote}</strong><span>{program.calibrationStatus === "calibrated" ? "Seu plano foi calibrado." : "Seu plano está ficando mais personalizado."} {CONFIDENCE_COPY[program.adaptiveConfidence || "low"]}. Quanto mais você treina, mais preciso fica o plano.</span></article>
       {returnAdaptation.level !== "none" && adaptationChoice === "pending" && <article className="suggestion-card"><p>AJUSTE DE RETORNO</p><h2>{returnAdaptation.explanation}</h2><div><button onClick={() => setAdaptationChoice("accepted")}>Aceitar ajuste</button><button onClick={onEditProfile}>Editar dados</button><button onClick={() => setAdaptationChoice("ignored")}>Ignorar</button></div></article>}
       {suggestedProtocol && protocolChoice === "pending" && <article className="suggestion-card"><p>TÉCNICA OPCIONAL</p><h2>{suggestedProtocol.name}</h2><span>{suggestedProtocol.explanation}</span><div><button onClick={() => setProtocolChoice("accepted")}>Aceitar</button><button onClick={onEditProfile}>Editar</button><button onClick={() => setProtocolChoice("ignored")}>Ignorar</button></div></article>}
       <div className="section-heading"><div><p>{selectedDay?.isToday ? "HOJE" : "DATA SELECIONADA"}</p><h2>{workout ? "Plano da sessão" : "Recuperação planejada"}</h2></div></div>
-      {workout ? <><div className="workout-blocks-overview"><WorkoutBlockOverview title="Aquecimento e mobilidade" items={workout.warmup} block="warmup" /><WorkoutBlockOverview title="Parte principal" items={workout.main} block="main" /><WorkoutBlockOverview title="Encerramento e alongamento" items={workout.cooldown} block="cooldown" /></div>{selectedDay?.sequenceOffset === 0 && <button className="skip-workout-button" onClick={() => skipWorkout(workout, selectedDay.dateKey, sequenceNumber)}><span aria-hidden="true">↷</span><div><strong>Pular treino</strong><small>Registrar como pulado e avançar a sequência</small></div><b aria-hidden="true">→</b></button>}</> : <article className="safety-block"><p>Recuperação também faz parte do plano. O próximo treino permanece na sequência.</p></article>}
+      {workout ? <><div className="workout-blocks-overview"><WorkoutBlockOverview title="Aquecimento e mobilidade" items={workout.warmup} block="warmup" /><WorkoutBlockOverview title="Parte principal" items={workout.main} block="main" /><WorkoutBlockOverview title="Encerramento e alongamento" items={workout.cooldown} block="cooldown" /></div>{(selectedDay?.sequenceOffset === 0 || postponed) && <button className="skip-workout-button" onClick={() => skipWorkout(workout, selectedDay.dateKey, sequenceNumber)}><span aria-hidden="true">↷</span><div><strong>Pular treino</strong><small>Registrar como pulado e avançar a sequência</small></div><b aria-hidden="true">→</b></button>}</> : <article className="safety-block"><p>Recuperação também faz parte do plano. O próximo treino permanece na sequência.</p></article>}
       {workout && workout.notices.length > 0 && <article className="safety-block compact">{workout.notices.map((notice) => <p key={notice}>! {notice}</p>)}</article>}
-      <div className="metrics-grid"><article><p>Objetivo</p><strong>{profile.goal}</strong><span>foco principal</span></article><article><p>Rotina efetiva</p><strong>{program.effectiveDays}x</strong><span>por semana</span></article><article><p>Recuperação</p><strong>{program.recoveryClass}</strong><span>{program.specialPhase || program.effectiveExperience}</span></article></div>
+      <div className="metrics-grid"><article><p>Objetivo</p><strong>{profile.goal || "Objetivo ainda não definido"}</strong><span>foco principal</span></article><article><p>Rotina efetiva</p><strong>{program.effectiveDays ? `${program.effectiveDays}x` : "Rotina sendo aprendida"}</strong><span>por semana</span></article><article><p>Recuperação</p><strong>{program.recoveryClass}</strong><span>{program.specialPhase || (profile.experience ? program.effectiveExperience : "Nível sendo aprendido")}</span></article></div>
       <div className="quick-actions"><button onClick={() => setTab("profile")}><span>○</span><div><strong>Meu perfil e ajustes</strong><small>Revisar dados, preferências e backup</small></div></button></div>
     </section>
   );
@@ -1163,9 +1241,10 @@ function Progress({ profile, program, history, measurements, setTab, onSaveMeasu
   const restingEnergy = estimateRestingEnergy(profile.weightKg, profile.heightCm, age, profile.biologicalSex);
   const recentWorkouts = history.filter((item) => isAttendedTrainingSession(item) && now - new Date(item.completedAt).getTime() <= 28 * 86_400_000);
   const attendanceDays = new Set(recentWorkouts.map((item) => localDateKey(new Date(item.completedAt)))).size;
-  const monthlyAdherence = calculateAdherence(history, new Date(now), profile.days);
+  const effectiveSchedule = resolveEffectiveSchedule(profile.days, program.effectiveDays || 3);
+  const monthlyAdherence = calculateAdherence(history, new Date(now), effectiveSchedule);
   const adherence = monthlyAdherence.adherencePercentage;
-  const plannedWeekly = Math.max(profile.days.length, 1);
+  const plannedWeekly = Math.max(effectiveSchedule.length, 1);
   const streak = attendanceStreak(history);
   const attendedHistory = history.filter((item) => isAttendedTrainingSession(item));
   const completedHistory = history.filter((item) => normalizedTrainingStatus(item) === "completed");
@@ -1192,13 +1271,13 @@ function Progress({ profile, program, history, measurements, setTab, onSaveMeasu
   const activities = [...history]
     .sort((a, b) => new Date(b.completedAt).getTime() - new Date(a.completedAt).getTime())
     .slice(0, 4)
-    .map((item) => ({ id: `workout-${item.id}`, historyId: item.id, type: trainingStatusLabel(item), title: item.workoutName, date: item.completedAt, meta: `${item.completedExercises}/${item.totalExercises} movimentos · ${item.durationMinutes} min${item.sessionRpe ? ` · RPE ${item.sessionRpe}` : ""}${item.cardioMinutes ? ` · cardio ${item.cardioMinutes} min ${item.cardioIntensity?.toLowerCase()}` : ""}${item.symptoms?.length ? " · sintomas registrados" : ""}` }));
+    .map((item) => ({ id: `workout-${item.id}`, historyId: item.id, type: trainingStatusLabel(item), title: item.workoutName, date: item.completedAt, meta: `${item.completedExercises}/${item.totalExercises} movimentos · ${item.durationMinutes} min${item.sessionRpe ? ` · RPE ${item.sessionRpe}` : ""}${item.cardioMinutes ? ` · cardio ${item.cardioMinutes} min ${cardioLabel(item.cardioIntensity).toLocaleLowerCase("pt-BR")}` : ""}${item.symptoms?.length ? " · sintomas registrados" : ""}` }));
 
   return <section className="screen performance-screen">
     <div className="simple-header"><p>CONSISTÊNCIA + EVOLUÇÃO</p><h1>Progresso</h1></div>
     {!hasActivity && <article className="progress-welcome"><span aria-hidden="true">↗</span><div><strong>Seu progresso começa hoje.</strong><p>Conclua ao menos uma série para registrar automaticamente sua presença e evolução.</p><button onClick={() => setTab("today")}>Ir para Hoje →</button></div></article>}
     <div className="progress-summary"><article><strong>{completedHistory.length}</strong><span>concluídos</span></article><article><strong>{partialHistory.length}</strong><span>parciais</span></article><article><strong>{streak}</strong><span>{streak === 1 ? "dia seguido" : "dias seguidos"}</span></article></div>
-    {!complete && <button className="profile-completion-card" onClick={() => setTab("profile")}><span>!</span><div><strong>Complete seus dados</strong><small>Informe os dados do perfil para liberar todas as métricas.</small></div><b>→</b></button>}
+    {!complete && <button className="profile-completion-card" onClick={() => setTab("profile")}><span>+</span><div><strong>Acompanhe mais indicadores</strong><small>Adicione medidas corporais para acompanhar também peso, IMC e cintura.</small></div><b>→</b></button>}
     {hasActivity && <article className="adherence-card"><div><p>ASSIDUIDADE · 28 DIAS</p><strong>{adherence}%</strong><span>{attendanceDays} {attendanceDays === 1 ? "dia com presença" : "dias com presença"} · meta de {plannedWeekly}x/semana</span></div><div className="adherence-ring" style={{ background: `conic-gradient(var(--accent) ${adherence * 3.6}deg, var(--surface-3) 0deg)` }}><span>{attendanceDays}</span><small>presenças</small></div></article>}
     <div className="performance-section"><div className="section-heading"><div><p>FREQUÊNCIA</p><h2>Treinos nas últimas 6 semanas</h2></div></div>{attendedHistory.length ? <article className="chart-card"><MetricBars items={weekly} /></article> : <article className="data-empty"><strong>O gráfico será ativado no primeiro treino realizado</strong><p>Treinos pulados e sessões sem séries concluídas não entram nesta conta.</p></article>}</div>
     <div className="performance-section"><div className="section-heading"><div><p>VOLUME SEMANAL</p><h2>Grupos musculares</h2></div><span className="version-badge">últimos 7 dias</span></div>{weeklyMuscleVolume.length ? <div className="muscle-volume-list">{weeklyMuscleVolume.map((item) => <article key={item.muscleGroup} className={`volume-${item.status}`}><div><strong>{item.muscleGroup}</strong><small>{item.completedSets} de {item.plannedSets} séries planejadas</small></div><span><i style={{ width: `${Math.min(100, item.percentage)}%` }} /></span><b>{item.status === "above" ? "acima do plano" : item.status === "target" ? "meta atingida" : `${item.percentage}%`}</b></article>)}</div> : <article className="data-empty"><strong>O controle começa no próximo treino</strong><p>As séries realizadas serão agrupadas por músculo e comparadas ao plano da semana.</p></article>}</div>
@@ -1247,7 +1326,7 @@ function recalculateWorkoutRecord(record: WorkoutHistory): WorkoutHistory {
       setsCompleted: completed.length,
       repetitions: repetitions.length ? Math.min(...repetitions) : 0,
       load: loads.length ? Math.max(...loads) : 0,
-      rirOrRpe: rir.length ? rir.reduce((sum, value) => sum + value, 0) / rir.length : 0,
+      rirOrRpe: rir.length ? rir.reduce((sum, value) => sum + value, 0) / rir.length : undefined,
       restTime: rests.length ? Math.round(rests.reduce((sum, value) => sum + value, 0) / rests.length) : exerciseRecord.restTime,
       executionFeedback: completed.length >= exerciseRecord.setsPlanned ? "adequate" as const : completed.length ? "limited" as const : "unknown" as const,
     };
@@ -1256,6 +1335,14 @@ function recalculateWorkoutRecord(record: WorkoutHistory): WorkoutHistory {
   const totalSets = exerciseRecords.reduce((sum, item) => sum + item.setsPlanned, 0);
   const completedSets = exerciseRecords.reduce((sum, item) => sum + item.setsCompleted, 0);
   const ratio = totalSets ? completedSets / totalSets : 0;
+  const sessionQualityScore = calculateSessionQuality({
+    exercises: exerciseRecords.map((item, index) => ({ priority: item.priority || (index < 2 ? "A" : index < 5 ? "B" : "C"), completed: item.setsCompleted >= item.setsPlanned })),
+    effectiveSetsPerformed: completedSets,
+    effectiveSetsPrescribed: totalSets,
+    painScore: record.painScore,
+    symptoms: record.symptoms,
+    durationMinutes: record.durationMinutes,
+  }).score;
   return {
     ...record,
     exerciseRecords,
@@ -1264,8 +1351,9 @@ function recalculateWorkoutRecord(record: WorkoutHistory): WorkoutHistory {
     completionPercentage: Math.round(ratio * 100),
     totalVolumeKg: Math.round(totalVolumeKg),
     estimatedOneRepMax: Math.round(estimatedOneRepMax * 10) / 10,
-    averageRir: allRir.length ? Math.round((allRir.reduce((sum, value) => sum + value, 0) / allRir.length) * 10) / 10 : 0,
-    status: ratio > 0.5 ? "completed" : completedSets > 0 ? "partial" : "interrupted",
+    averageRir: allRir.length ? Math.round((allRir.reduce((sum, value) => sum + value, 0) / allRir.length) * 10) / 10 : undefined,
+    sessionQualityScore,
+    status: qualifySessionCompletion(completedSets, totalSets, sessionQualityScore),
   };
 }
 
@@ -1302,18 +1390,22 @@ function playTimerSound() {
 
 function AdaptiveWorkoutSession({ session, profile, history, previousWorkout, preferences, onExit, onPersist, onFinish }: { session: ActiveWorkoutSession; profile: Profile; history: WorkoutHistory[]; previousWorkout?: WorkoutHistory; preferences: AppPreferences; onExit: () => void; onPersist: (session: ActiveWorkoutSession) => void; onFinish: (session: ActiveWorkoutSession, status?: "completed" | "partial" | "interrupted") => void }) {
   const normalizedSession = normalizeActiveWorkoutSession(session);
-  const initialSession = normalizedSession.status === "setup" ? beginActiveSession(normalizedSession) : normalizedSession;
-  const [state, setState] = useState(initialSession);
-  const stateRef = useRef(initialSession);
+  const passiveReadiness = inferPassiveReadiness(history);
+  const [state, setState] = useState(() => normalizedSession.status === "setup" ? beginActiveSession(normalizedSession, Date.now(), previousWorkout, passiveReadiness.level) : normalizedSession);
+  const stateRef = useRef(state);
   const onPersistRef = useRef(onPersist);
   const [now, setNow] = useState(() => Date.now());
   const [exitPrompt, setExitPrompt] = useState(false);
   const [endWorkoutPrompt, setEndWorkoutPrompt] = useState(false);
   const [quickAction, setQuickAction] = useState<"substitute" | "pain" | null>(null);
-  const [substitutionReason, setSubstitutionReason] = useState("Equipamento indisponível");
+  const [substitutionReason, setSubstitutionReason] = useState<SubstitutionReason>("equipment_unavailable");
   const [selectedAlternative, setSelectedAlternative] = useState("");
   const [painRegion, setPainRegion] = useState("");
   const [painIntensity, setPainIntensity] = useState("0");
+  const [painType, setPainType] = useState<"muscular" | "joint" | "nerve" | "unknown">("unknown");
+  const [painTiming, setPainTiming] = useState<"during" | "after" | "next_day">("during");
+  const [exerciseListOpen, setExerciseListOpen] = useState(false);
+  const [reviewOpen, setReviewOpen] = useState(false);
   const [selectedSeries, setSelectedSeries] = useState(1);
   const [notificationPermission, setNotificationPermission] = useState<NotificationPermission>(() => typeof Notification === "undefined" ? "denied" : Notification.permission);
   const baseItems = [...state.workout.warmup, ...state.workout.main, ...state.workout.cooldown];
@@ -1384,7 +1476,7 @@ function AdaptiveWorkoutSession({ session, profile, history, previousWorkout, pr
     if (preferences.sound) playTimerSound();
     void hapticImpact(preferences.vibration);
     if (notificationPermission === "granted" && document.visibilityState === "hidden") {
-      void navigator.serviceWorker?.ready.then((registration) => registration.showNotification("Descanso concluído", { body: "Sua próxima série está pronta.", icon: "/icon-192.png", tag: "angelsfit-rest" })).catch(() => undefined);
+      void showRestNotification();
     }
     setState((currentState) => completeRest(currentState));
   }, [notificationPermission, preferences.sound, preferences.vibration, restRemaining, state.restEndsAt]);
@@ -1518,11 +1610,16 @@ function AdaptiveWorkoutSession({ session, profile, history, previousWorkout, pr
 
   function registerPainEvent() {
     if (!current || !currentSlotId || !painRegion || Number(painIntensity) < 1) return;
+    const performedExerciseId = current.exercise.id;
     setState((currentState) => patchActiveSession(currentState, {
       painEvents: [...currentState.painEvents, {
-        exerciseId: currentSlotId,
+        exerciseId: performedExerciseId,
+        plannedExerciseId: performedExerciseId === currentSlotId ? undefined : currentSlotId,
         region: painRegion,
         intensity: Number(painIntensity),
+        type: painType,
+        timing: painTiming,
+        recurrence: currentState.painEvents.filter((event) => event.exerciseId === performedExerciseId && event.region.toLocaleLowerCase("pt-BR") === painRegion.toLocaleLowerCase("pt-BR")).length + 1,
         recordedAt: new Date().toISOString(),
       }],
     }));
@@ -1548,14 +1645,15 @@ function AdaptiveWorkoutSession({ session, profile, history, previousWorkout, pr
       <main className="session-shell session-feedback">
         <header className="session-header"><button className="session-close" onClick={() => setState((currentState) => patchActiveSession(currentState, { status: "active", elapsedStartedAt: new Date().toISOString() }))}>← Voltar</button><div><small>REVISÃO FINAL</small><strong>{state.workout.name}</strong></div><span>{Math.round(elapsed / 60)} min</span></header>
         <section className="session-setup-content session-review-content">
-          <p className="eyebrow">CONFIRA ANTES DE SALVAR</p><h1>Resumo da sessão</h1>
-          <div className="review-kpis"><article><strong>{reviewSummary.completedExercises}/{reviewSummary.totalExercises}</strong><span>movimentos</span></article><article><strong>{reviewSummary.totalVolumeKg.toLocaleString("pt-BR")} kg</strong><span>volume</span></article><article><strong>{incompleteRows}</strong><span>para revisar</span></article></div>
-          <div className="session-review-list">{reviewRows.map(({ item, index, entries, completed, incompleteData }) => <article key={`${item.exercise.id}-${index}`} className={completed.length >= item.sets && !incompleteData ? "complete" : "needs-review"}><header><div><strong>{item.exercise.name}</strong><small>{completed.length}/{item.sets} séries{incompleteData ? ` · ${incompleteData} sem dados` : ""}</small></div><button onClick={() => setState((currentState) => patchActiveSession(currentState, { status: "active", currentExerciseIndex: index, elapsedStartedAt: new Date().toISOString() }))}>Revisar</button></header><div>{entries.map((entry) => <span key={entry.series} className={entry.completed ? "done" : ""}><b>S{entry.series}</b>{seriesPerformanceLabel(entry)}</span>)}</div></article>)}</div>
+           <p className="eyebrow">TREINO CONCLUÍDO</p><h1>{Math.round(elapsed / 60)} min</h1>
+           <div className="review-kpis"><article><strong>{completionProgress.completedSeries}/{completionProgress.totalSeries}</strong><span>séries</span></article><article><strong>{reviewSummary.completedExercises}/{reviewSummary.totalExercises}</strong><span>movimentos</span></article><article><strong>{reviewSummary.totalVolumeKg.toLocaleString("pt-BR")} kg</strong><span>volume</span></article></div>
+           <button className="review-series-secondary" type="button" onClick={() => setReviewOpen((value) => !value)}>{reviewOpen ? "Ocultar revisão" : `Revisar séries${incompleteRows ? ` · ${incompleteRows} pontos` : ""}`}</button>
+           {reviewOpen && <div className="session-review-list">{reviewRows.map(({ item, index, entries, completed, incompleteData }) => <article key={`${item.exercise.id}-${index}`} className={completed.length >= item.sets && !incompleteData ? "complete" : "needs-review"}><header><div><strong>{item.exercise.name}</strong><small>{completed.length}/{item.sets} séries{incompleteData ? ` · ${incompleteData} sem dados` : ""}</small></div><button onClick={() => setState((currentState) => patchActiveSession(currentState, { status: "active", currentExerciseIndex: index, elapsedStartedAt: new Date().toISOString() }))}>Revisar</button></header><div>{entries.map((entry) => <span key={entry.series} className={entry.completed ? "done" : ""}><b>S{entry.series}</b>{seriesPerformanceLabel(entry)}</span>)}</div></article>)}</div>}
           <div className="review-divider"><span>Resposta ao treino · opcional</span></div>
           <div className="readiness-grid"><label>Esforço da sessão (RPE 1-10) · opcional<input type="number" inputMode="numeric" min="1" max="10" value={state.sessionRpe} onChange={(event) => patch({ sessionRpe: event.target.value })} /></label><label>Dor ao terminar (0-10) · opcional<input type="number" inputMode="numeric" min="0" max="10" value={state.painAfter} onChange={(event) => patch({ painAfter: event.target.value })} /></label></div>
-          <div className="cardio-plan-comparison"><small>PLANEJADO</small><strong>{state.plannedCardioIntensity === "Sem cardio hoje" ? "Sem cardio" : `${state.plannedCardioMinutes} min · ${state.plannedCardioIntensity}`}</strong></div>
-          <div className="cardio-setup-card"><span aria-hidden="true">♥</span><label>Cardio realizado (min)<input type="number" inputMode="numeric" min="1" max="120" disabled={state.cardioIntensity === "Sem cardio hoje"} value={state.cardioMinutes} onChange={(event) => patch({ cardioMinutes: event.target.value })} /></label><label>Intensidade realizada<select value={state.cardioIntensity} onChange={(event) => patch({ cardioIntensity: event.target.value, cardioMinutes: event.target.value === "Sem cardio hoje" ? "" : state.cardioMinutes })}><option>Sem cardio hoje</option><option>Leve</option><option>Moderada</option><option>Intensa</option></select></label></div>
-          <p className="field-title">Sintomas durante ou logo após</p><div className="condition-grid symptom-grid">{postpartumSymptomOptions.map((item) => <button type="button" key={item.id} aria-pressed={state.postSymptoms.includes(item.id)} className={state.postSymptoms.includes(item.id) ? "selected warning" : ""} onClick={() => patch({ postSymptoms: state.postSymptoms.includes(item.id) ? state.postSymptoms.filter((value) => value !== item.id) : [...state.postSymptoms, item.id] })}>{item.label}</button>)}</div>
+          <div className="cardio-plan-comparison"><small>PLANEJADO</small><strong>{state.plannedCardioIntensity === "none" ? "Sem cardio" : `${state.plannedCardioMinutes} min · ${cardioLabel(state.plannedCardioIntensity)}`}</strong></div>
+          <div className="cardio-setup-card"><span aria-hidden="true">♥</span><label>Cardio realizado (min)<input type="number" inputMode="numeric" min="1" max="120" disabled={state.cardioIntensity === "none"} value={state.cardioMinutes} onChange={(event) => patch({ cardioMinutes: event.target.value })} /></label><label>Intensidade realizada<select value={state.cardioIntensity} onChange={(event) => { const intensity = event.target.value as CardioIntensity; patch({ cardioIntensity: intensity, cardioMinutes: intensity === "none" ? "" : state.cardioMinutes }); }}><option value="none">Sem cardio hoje</option><option value="light">Leve</option><option value="moderate">Moderada</option><option value="vigorous">Intensa</option></select></label></div>
+           {(profile.specialConditions || []).some((condition) => ["postpartum", "cesarean"].includes(condition)) && <><p className="field-title">Sintomas durante ou logo após</p><div className="condition-grid symptom-grid">{postpartumSymptomOptions.map((item) => <button type="button" key={item.id} aria-pressed={state.postSymptoms.includes(item.id)} className={state.postSymptoms.includes(item.id) ? "selected warning" : ""} onClick={() => patch({ postSymptoms: state.postSymptoms.includes(item.id) ? state.postSymptoms.filter((value) => value !== item.id) : [...state.postSymptoms, item.id] })}>{item.label}</button>)}</div></>}
           {state.postSymptoms.length > 0 && <article className="readiness-result readiness-atenção"><strong>Sintomas registrados</strong><p>As informações ficarão visíveis no resumo da sessão.</p></article>}
           <button className="primary-button" onClick={() => onFinish(state)}>Salvar e concluir <span>✓</span></button>
         </section>
@@ -1570,25 +1668,25 @@ function AdaptiveWorkoutSession({ session, profile, history, previousWorkout, pr
   const restOrigin = restOriginIndex >= 0 ? items[restOriginIndex] : undefined;
   const finishedRestIndex = state.lastRestExerciseId ? baseItems.findIndex((item) => item.exercise.id === state.lastRestExerciseId) : -1;
   const finishedRestOrigin = finishedRestIndex >= 0 ? items[finishedRestIndex] : undefined;
-  const lastPainRegion = [...state.painEvents].reverse().find((event) => event.exerciseId === currentSlotId)?.region || painRegion;
+  const lastPainRegion = [...state.painEvents].reverse().find((event) => event.exerciseId === current.exercise.id || event.plannedExerciseId === currentSlotId)?.region || painRegion;
   const rankedAlternatives = rankExerciseSubstitutions({
     current: current.exercise,
     candidates: exercises,
     experience: profile.experience,
     location: profile.location,
     reason: substitutionReason,
-    painRegion: substitutionReason === "Desconforto ou dor" ? lastPainRegion : "",
+    painRegion: substitutionReason === "pain" ? lastPainRegion : "",
     safetyAvoidCodes: detectSafetyCodes(profile),
-    previouslyPainfulExerciseIds: previousWorkout?.exerciseRecords?.filter((record) => record.painReported).map((record) => record.exerciseId),
+    previouslyPainfulExerciseIds: history.slice(0, 8).flatMap((workoutRecord) => workoutRecord.exerciseRecords?.filter((record) => record.painReported).map((record) => record.exerciseId) || []),
   }).slice(0, 6);
   const alternatives = rankedAlternatives.map((item) => item.exercise);
   const alternative = alternatives[0];
-  const currentPains = state.painEvents.filter((event) => event.exerciseId === currentSlotId);
+  const currentPains = state.painEvents.filter((event) => event.exerciseId === current.exercise.id || event.plannedExerciseId === currentSlotId);
   return (
     <main className={`session-shell session-with-end-action workout-font-${preferences.workoutFontSize}`}>
       <header className="session-header"><button className="session-close" onClick={() => setExitPrompt(true)}>Fechar</button><div><small>{state.workout.name}</small><strong>{Math.floor(elapsed / 60).toString().padStart(2, "0")}:{(elapsed % 60).toString().padStart(2, "0")}</strong></div><span>{state.currentExerciseIndex + 1}/{items.length}</span></header>
       <div className="session-progress"><span style={{ width: `${((state.currentExerciseIndex + 1) / items.length) * 100}%` }} /></div>
-      <nav className="exercise-jump-strip" aria-label="Ir para qualquer exercício">{items.map((item, index) => { const slotId = baseItems[index]?.exercise.id || item.exercise.id; const plannedSets = state.setOverrides[slotId] ?? item.sets; const done = seriesPerformances(state, slotId, plannedSets).every((entry) => entry.completed); return <button type="button" key={`${item.exercise.id}-${index}`} aria-current={index === state.currentExerciseIndex ? "step" : undefined} className={`${index === state.currentExerciseIndex ? "active" : ""} ${done ? "done" : ""}`} onClick={() => patch({ currentExerciseIndex: index })}>{done ? "✓" : index + 1}<span>{item.exercise.name}</span></button>; })}</nav>
+      <button type="button" className="exercise-list-trigger" onClick={() => setExerciseListOpen(true)}><span><b>{state.currentExerciseIndex + 1} / {items.length}</b>{current.exercise.name}</span><em>Lista ↓</em></button>
       <section className="session-content">
         <p className="eyebrow">{state.currentExerciseIndex < state.workout.warmup.length ? "AQUECIMENTO E MOBILIDADE" : state.currentExerciseIndex >= state.workout.warmup.length + state.workout.main.length ? "ENCERRAMENTO E ALONGAMENTO" : "PARTE PRINCIPAL"}</p>
         <h1>{current.exercise.name}</h1>
@@ -1619,17 +1717,17 @@ function AdaptiveWorkoutSession({ session, profile, history, previousWorkout, pr
           {currentSeriesEntries.length > 0 && currentSeriesEntries.every((entry) => entry.completed) && <div className="exercise-complete-banner">Exercício concluído ✓</div>}
         </div>
         <ExerciseDemo key={current.exercise.id} exerciseId={current.exercise.id} exerciseName={current.exercise.name} compact />
-        <details className="technique-card" open><summary>Como executar</summary><p>{current.exercise.instructions}</p><small>Cadência: {current.tempo}</small></details>
+         <details className="technique-card"><summary>Como executar</summary><p>{current.exercise.instructions}</p><small>Cadência: {current.tempo}</small><p><strong>Orientação:</strong> {current.note}</p></details>
         <details className="technique-card"><summary>Erros e alternativa</summary><p>{current.exercise.commonErrors}</p>{alternative && <small>Alternativa sugerida: {alternative.name}</small>}</details>
-        <p className="individual-note">{current.note}</p>
         <div className="session-quick-actions"><button onClick={() => { setSelectedAlternative(alternatives[0]?.id || ""); setQuickAction("substitute"); }}>↻ Substituir exercício</button><button onClick={() => setQuickAction("pain")}>! Registrar desconforto</button></div>
         {currentPains.length > 0 && <div className="pain-event-list">{currentPains.map((event) => <span key={event.recordedAt}>{event.region} · {event.intensity}/10</span>)}</div>}
       </section>
-      {(restRemaining > 0 || state.restPausedSeconds !== null) && <aside className="session-rest-dock" aria-live="polite"><div><small>DESCANSO APÓS SÉRIE {state.activeRestSeries}</small><strong>{Math.floor(restRemaining / 60).toString().padStart(2, "0")}:{(restRemaining % 60).toString().padStart(2, "0")}</strong><span>{restOrigin?.exercise.name || "Exercício"} · o timer não bloqueia a navegação</span></div><div className="rest-dock-actions"><button type="button" disabled={restRemaining <= 15} onClick={() => setState((currentState) => addRestSeconds(currentState, -15))}>−15s</button><button type="button" onClick={() => setState((currentState) => addRestSeconds(currentState, 15))}>+15s</button>{state.restPausedSeconds === null ? <button type="button" onClick={() => setState((currentState) => pauseRest(currentState))}>Pausar</button> : <button type="button" onClick={() => setState((currentState) => resumeRest(currentState))}>Retomar</button>}<button type="button" onClick={() => setState((currentState) => skipRest(currentState))}>Pular</button></div>{notificationPermission === "default" && <button type="button" className="rest-notification-enable" onClick={() => { void enableRestNotifications(); }}>Ativar aviso quando o descanso terminar</button>}</aside>}
+       {(restRemaining > 0 || state.restPausedSeconds !== null) && <aside className="session-rest-dock" aria-live="polite"><div><small>DESCANSO</small><strong>{Math.floor(restRemaining / 60).toString().padStart(2, "0")}:{(restRemaining % 60).toString().padStart(2, "0")}</strong><span>{restOrigin?.exercise.name || "Exercício"} · após série {state.activeRestSeries}</span></div><div className="rest-dock-actions"><button type="button" disabled={restRemaining <= 15} onClick={() => setState((currentState) => addRestSeconds(currentState, -15))}>−15</button><button type="button" onClick={() => setState((currentState) => addRestSeconds(currentState, 15))}>+15</button>{state.restPausedSeconds === null ? <button type="button" onClick={() => setState((currentState) => pauseRest(currentState))}>Pausar</button> : <button type="button" onClick={() => setState((currentState) => resumeRest(currentState))}>Retomar</button>}<button type="button" onClick={() => setState((currentState) => skipRest(currentState))}>Pular</button><button type="button" disabled={state.currentExerciseIndex === 0} onClick={() => patch({ currentExerciseIndex: Math.max(0, state.currentExerciseIndex - 1) })}>←</button><button type="button" disabled={state.currentExerciseIndex >= items.length - 1} onClick={() => patch({ currentExerciseIndex: Math.min(items.length - 1, state.currentExerciseIndex + 1) })}>→</button></div>{notificationPermission === "default" && <button type="button" className="rest-notification-enable" onClick={() => { void enableRestNotifications(); }}>Ativar aviso quando o descanso terminar</button>}</aside>}
       {!state.activeRestExerciseId && state.lastRestExerciseId && state.lastRestSeries && <aside className="session-rest-dock rest-finished" aria-live="assertive"><div><small>DESCANSO CONCLUÍDO</small><strong>Pronta para a série {state.lastRestSeries + 1}</strong><span>{finishedRestOrigin?.exercise.name || "Exercício"}</span></div><div className="rest-finished-actions"><button type="button" onClick={() => setState((currentState) => clearRestNotice(currentState))}>Dispensar</button><button type="button" onClick={() => { if (finishedRestIndex >= 0) patch({ currentExerciseIndex: finishedRestIndex, lastRestExerciseId: null, lastRestSeries: null }); }}>Ir para a série</button></div></aside>}
-      <footer className="session-nav session-nav-with-end"><button type="button" className="end-session-button" onClick={() => setEndWorkoutPrompt(true)}>Encerrar treino <span>{completionProgress.percentage}% feito</span></button><button disabled={state.currentExerciseIndex === 0} onClick={() => patch({ currentExerciseIndex: Math.max(0, state.currentExerciseIndex - 1) })}>← Voltar</button>{state.currentExerciseIndex < items.length - 1 ? <button className="next" onClick={() => patch({ currentExerciseIndex: Math.min(items.length - 1, state.currentExerciseIndex + 1) })}>Próximo →</button> : <div className="finish-session-actions"><button type="button" onClick={() => setState((currentState) => enterFeedback(currentState))}>Avaliar · opcional</button><button className="next" onClick={() => onFinish(state)}>Concluir treino ✓</button></div>}</footer>
-      {quickAction === "substitute" && <div className="bottom-sheet-backdrop" role="presentation" onClick={() => setQuickAction(null)}><section className="bottom-sheet" role="dialog" aria-modal="true" aria-labelledby="substitution-title" onClick={(event) => event.stopPropagation()}><header><div><small>AJUSTE INTELIGENTE</small><h2 id="substitution-title">Substituir exercício</h2></div><button aria-label="Fechar" onClick={() => setQuickAction(null)}>×</button></header><p>As opções preservam o movimento, o grupo muscular e o seu nível, evitando restrições e exercícios com dor registrada.</p><label>Motivo<select value={substitutionReason} onChange={(event) => { setSubstitutionReason(event.target.value); setSelectedAlternative(""); }}><option>Equipamento indisponível</option><option>Desconforto ou dor</option><option>Preferência pessoal</option><option>Outro</option></select></label><div className="sheet-options">{rankedAlternatives.length ? rankedAlternatives.map(({ exercise, explanation }) => <button key={exercise.id} aria-pressed={selectedAlternative === exercise.id} onClick={() => setSelectedAlternative(exercise.id)}><strong>{exercise.name}</strong><small>{explanation}</small><small>{exercise.equipment}</small></button>) : <article className="data-empty"><strong>Nenhuma troca segura encontrada</strong><p>Interrompa este movimento e siga apenas quando houver uma opção compatível.</p></article>}</div><button className="sheet-primary" disabled={!selectedAlternative} onClick={replaceCurrentExercise}>Aplicar substituição</button></section></div>}
-      {quickAction === "pain" && <div className="bottom-sheet-backdrop" role="presentation" onClick={() => setQuickAction(null)}><section className="bottom-sheet" role="dialog" aria-modal="true" aria-labelledby="pain-title" onClick={(event) => event.stopPropagation()}><header><div><small>SEGURANÇA</small><h2 id="pain-title">Registrar desconforto</h2></div><button aria-label="Fechar" onClick={() => setQuickAction(null)}>×</button></header><p>O registro fica associado a {current.exercise.name} e aparece no resumo do treino.</p><label>Região do corpo<input value={painRegion} onChange={(event) => setPainRegion(event.target.value)} placeholder="Ex.: joelho direito" /></label><label>Intensidade: <strong>{painIntensity}/10</strong><input type="range" min="0" max="10" value={painIntensity} onChange={(event) => setPainIntensity(event.target.value)} /></label><div className="safety-note"><span>!</span><p>Interrompa o exercício em caso de dor aguda, tontura, falta de ar incomum ou piora relevante.</p></div><button className="sheet-primary danger" disabled={!painRegion.trim() || Number(painIntensity) < 1} onClick={registerPainEvent}>Salvar registro</button></section></div>}
+       {!state.activeRestExerciseId && <footer className="session-nav session-nav-with-end"><button type="button" className="end-session-button" onClick={() => setEndWorkoutPrompt(true)}>Encerrar treino <span>{completionProgress.percentage}% feito</span></button><button disabled={state.currentExerciseIndex === 0} onClick={() => patch({ currentExerciseIndex: Math.max(0, state.currentExerciseIndex - 1) })}>← Voltar</button>{state.currentExerciseIndex < items.length - 1 ? <button className="next" onClick={() => patch({ currentExerciseIndex: Math.min(items.length - 1, state.currentExerciseIndex + 1) })}>Próximo →</button> : <div className="finish-session-actions"><button type="button" onClick={() => setState((currentState) => enterFeedback(currentState))}>Feedback · opcional</button><button className="next" onClick={() => onFinish(state)}>Concluir treino ✓</button></div>}</footer>}
+       {quickAction === "substitute" && <div className="bottom-sheet-backdrop" role="presentation" onClick={() => setQuickAction(null)}><section className="bottom-sheet" role="dialog" aria-modal="true" aria-labelledby="substitution-title" onClick={(event) => event.stopPropagation()}><header><div><small>AJUSTE INTELIGENTE</small><h2 id="substitution-title">Substituir exercício</h2></div><button aria-label="Fechar" onClick={() => setQuickAction(null)}>×</button></header><p>As opções preservam movimento, músculos, nível, segurança, estímulo e custo de fadiga.</p><label>Motivo<select value={substitutionReason} onChange={(event) => { setSubstitutionReason(event.target.value as SubstitutionReason); setSelectedAlternative(""); }}><option value="equipment_unavailable">Equipamento indisponível</option><option value="pain">Desconforto ou dor</option><option value="technical_difficulty">Dificuldade técnica</option><option value="preference">Preferência pessoal</option><option value="time">Tempo</option><option value="fatigue">Fadiga</option><option value="other">Outro</option></select></label><div className="sheet-options">{rankedAlternatives.length ? rankedAlternatives.map(({ exercise, explanation }) => <button key={exercise.id} aria-pressed={selectedAlternative === exercise.id} onClick={() => setSelectedAlternative(exercise.id)}><strong>{exercise.name}</strong><small>{explanation}</small><small>{exercise.equipment}</small></button>) : <article className="data-empty"><strong>Nenhuma troca segura encontrada</strong><p>Interrompa este movimento e siga apenas quando houver uma opção compatível.</p></article>}</div><button className="sheet-primary" disabled={!selectedAlternative} onClick={replaceCurrentExercise}>Aplicar substituição</button></section></div>}
+       {quickAction === "pain" && <div className="bottom-sheet-backdrop" role="presentation" onClick={() => setQuickAction(null)}><section className="bottom-sheet" role="dialog" aria-modal="true" aria-labelledby="pain-title" onClick={(event) => event.stopPropagation()}><header><div><small>SEGURANÇA</small><h2 id="pain-title">Registrar desconforto</h2></div><button aria-label="Fechar" onClick={() => setQuickAction(null)}>×</button></header><p>O registro fica associado a {current.exercise.name}; uma ocorrência leve isolada não bane o movimento.</p><label>Região do corpo<input value={painRegion} onChange={(event) => setPainRegion(event.target.value)} placeholder="Ex.: joelho direito" /></label><label>Tipo<select value={painType} onChange={(event) => setPainType(event.target.value as typeof painType)}><option value="unknown">Não sei informar</option><option value="muscular">Muscular</option><option value="joint">Articular</option><option value="nerve">Choque, formigamento ou irradiação</option></select></label><label>Quando aconteceu<select value={painTiming} onChange={(event) => setPainTiming(event.target.value as typeof painTiming)}><option value="during">Durante</option><option value="after">Logo após</option><option value="next_day">No dia seguinte</option></select></label><label>Intensidade: <strong>{painIntensity}/10</strong><input type="range" min="0" max="10" value={painIntensity} onChange={(event) => setPainIntensity(event.target.value)} /></label><div className="safety-note"><span>!</span><p>Interrompa o exercício em caso de dor aguda, tontura, falta de ar incomum ou piora relevante.</p></div><button className="sheet-primary danger" disabled={!painRegion.trim() || Number(painIntensity) < 1} onClick={registerPainEvent}>Salvar registro</button></section></div>}
+       {exerciseListOpen && <div className="bottom-sheet-backdrop" role="presentation" onClick={() => setExerciseListOpen(false)}><section className="bottom-sheet exercise-list-sheet" role="dialog" aria-modal="true" aria-labelledby="exercise-list-title" onClick={(event) => event.stopPropagation()}><header><div><small>SESSÃO</small><h2 id="exercise-list-title">Exercícios</h2></div><button aria-label="Fechar" onClick={() => setExerciseListOpen(false)}>×</button></header><div className="exercise-session-list">{items.map((item, index) => { const slotId = baseItems[index]?.exercise.id || item.exercise.id; const done = seriesPerformances(state, slotId, state.setOverrides[slotId] ?? item.sets).every((entry) => entry.completed); return <button key={`${slotId}-${index}`} className={index === state.currentExerciseIndex ? "current" : ""} onClick={() => { patch({ currentExerciseIndex: index }); setExerciseListOpen(false); }}><span>{done ? "✓" : index === state.currentExerciseIndex ? "→" : "○"}</span><strong>{item.exercise.name}</strong><small>{item.priority || "B"}</small></button>; })}</div></section></div>}
       {exitPrompt && <ConfirmDialog title="Sair do treino?" description="Exercício, séries, carga, repetições e timer já estão salvos." confirmLabel="Salvar e sair" onConfirm={onExit} onCancel={() => setExitPrompt(false)} />}
       {endWorkoutPrompt && <ConfirmDialog title="Encerrar treino agora?" description={completionProgress.moreThanHalf ? `Você concluiu ${completionProgress.percentage}% do treino. A sessão e a presença serão registradas automaticamente.` : completionProgress.completedSeries > 0 ? `Você concluiu ${completionProgress.percentage}% do treino. A sessão parcial contará como presença.` : "Como nenhuma série foi concluída, a sessão será descartada sem registrar presença."} confirmLabel={completionProgress.completedSeries > 0 ? "Encerrar e registrar" : "Descartar sessão"} onConfirm={() => onFinish(state, completionProgress.moreThanHalf ? "completed" : completionProgress.completedSeries > 0 ? "partial" : "interrupted")} onCancel={() => setEndWorkoutPrompt(false)} />}
     </main>
@@ -1642,12 +1740,12 @@ function PrescriptionProfileFields({ draft, setDraft, toggleListField }: { draft
   return <div className="prescription-profile-fields"><p className="field-title">Objetivos secundários <small>Até dois.</small></p><div className="choice-grid">{goals.filter((goal) => goal !== draft.goal).map((goal) => <button type="button" key={goal} disabled={!(draft.secondaryGoals || []).includes(goal) && (draft.secondaryGoals || []).length >= 2} aria-pressed={(draft.secondaryGoals || []).includes(goal)} className={(draft.secondaryGoals || []).includes(goal) ? "selected" : ""} onClick={() => toggleListField("secondaryGoals", goal)}>{goal}</button>)}</div><p className="field-title">Equipamentos disponíveis</p><div className="condition-grid">{equipmentOptions.map((item) => <button type="button" key={item} aria-pressed={(draft.availableEquipment || []).includes(item)} className={(draft.availableEquipment || []).includes(item) ? "selected" : ""} onClick={() => toggleListField("availableEquipment", item)}>{item}</button>)}</div><div className="metric-form-grid"><label className="field-label">Meses de treino consistente<input type="number" min="0" max="600" value={draft.monthsConsistent ?? ""} onChange={(event) => setDraft({ ...draft, monthsConsistent: event.target.value ? Number(event.target.value) : 0 })} /></label><label className="field-label">Meses sem treinar<input type="number" min="0" max="600" value={draft.monthsSinceTraining ?? ""} onChange={(event) => setDraft({ ...draft, monthsSinceTraining: event.target.value ? Number(event.target.value) : 0 })} /></label><label className="field-label">Sono médio<input type="number" min="0" max="12" step="0.5" value={draft.averageSleepHours || ""} onChange={(event) => setDraft({ ...draft, averageSleepHours: event.target.value ? Number(event.target.value) : undefined })} /></label><label className="field-label">Estresse<select value={draft.stressLevel || ""} onChange={(event) => setDraft({ ...draft, stressLevel: event.target.value })}><option value="">Selecione</option><option>Baixo</option><option>Moderado</option><option>Alto</option></select></label><label className="field-label">Recuperação percebida<select value={draft.recoveryFeeling || ""} onChange={(event) => setDraft({ ...draft, recoveryFeeling: event.target.value })}><option value="">Selecione</option><option>Boa</option><option>Regular</option><option>Ruim</option></select></label></div><label className="field-label">Exercícios preferidos<input value={draft.preferredExercises || ""} onChange={(event) => setDraft({ ...draft, preferredExercises: event.target.value })} placeholder="Separe por vírgulas" /></label><label className="field-label">Exercícios rejeitados<input value={draft.rejectedExercises || ""} onChange={(event) => setDraft({ ...draft, rejectedExercises: event.target.value })} placeholder="Não entrarão na seleção" /></label>{postpartum && <section className="postpartum-profile-card"><p className="field-title">Recuperação pós-parto</p><div className="metric-form-grid"><label className="field-label">Data do parto<input type="date" value={draft.deliveryDate || ""} onChange={(event) => setDraft({ ...draft, deliveryDate: event.target.value })} /></label><label className="field-label">Tipo de parto<select value={draft.deliveryType || ""} onChange={(event) => setDraft({ ...draft, deliveryType: event.target.value })}><option value="">Selecione</option><option>Cesárea</option><option>Vaginal</option></select></label></div><label className="clearance-check"><input type="checkbox" checked={draft.incisionHealed || false} onChange={(event) => setDraft({ ...draft, incisionHealed: event.target.checked })} /><span><strong>Cicatriz fechada e sem sinais de infecção</strong><small>Sem calor, vermelhidão progressiva, secreção ou febre.</small></span></label><p className="field-title">Sintomas atuais</p><div className="condition-grid symptom-grid">{postpartumSymptomOptions.map((item) => <button type="button" key={item.id} aria-pressed={(draft.postpartumSymptoms || []).includes(item.id)} className={(draft.postpartumSymptoms || []).includes(item.id) ? "selected warning" : ""} onClick={() => toggleListField("postpartumSymptoms", item.id)}>{item.label}</button>)}</div></section>}</div>;
 }
 
-type ProfileViewProps = { profile: Profile; draft: Profile; setDraft: (profile: Profile) => void; editing: boolean; setEditing: (value: boolean) => void; cancelEditing: () => void; saveProfile: (event?: FormEvent) => void; handlePhoto: (event: ChangeEvent<HTMLInputElement>) => void; toggleDay: (day: string) => void; toggleSpecialCondition: (condition: string) => void; toggleListField: (field: "secondaryGoals" | "availableEquipment" | "postpartumSymptoms", value: string) => void; theme: "dark" | "light"; changeTheme: () => void; exportBackup: () => void; preferences: AppPreferences; changePreference: <K extends keyof AppPreferences>(name: K, value: AppPreferences[K]) => void; toggleRestNotifications: () => void; installed: boolean; iosDevice: boolean; installedAppVersion: string; updateStatus: UpdateStatus; lastUpdateCheck: string | null; updateApplication: () => void };
+type ProfileViewProps = { profile: Profile; draft: Profile; setDraft: (profile: Profile) => void; editing: boolean; setEditing: (value: boolean) => void; cancelEditing: () => void; saveProfile: (event?: FormEvent) => void; handlePhoto: (event: ChangeEvent<HTMLInputElement>) => void; toggleDay: (day: string) => void; toggleSpecialCondition: (condition: string) => void; toggleListField: (field: "secondaryGoals" | "availableEquipment" | "postpartumSymptoms", value: string) => void; theme: "dark" | "light"; changeTheme: () => void; exportBackup: () => Promise<void>; preferences: AppPreferences; changePreference: <K extends keyof AppPreferences>(name: K, value: AppPreferences[K]) => void; toggleRestNotifications: () => void; installed: boolean; iosDevice: boolean; installedAppVersion: string; updateStatus: UpdateStatus; lastUpdateCheck: string | null; updateApplication: () => void };
 
 function InstallationSetting({ installed, iosDevice, canInstall, onInstall }: { installed: boolean; iosDevice: boolean; canInstall: boolean; onInstall: () => void }) {
   if (isNativeApp()) return null;
   const android = typeof navigator !== "undefined" && /Android/i.test(navigator.userAgent);
-  return <section className="installation-setting"><p>INSTALAÇÃO</p><h2>Usar AngelsFit como aplicativo</h2>{installed ? <div className="installation-ready"><span>✓</span><div><strong>Já instalado neste aparelho</strong><small>Abra pelo ícone da tela inicial.</small></div></div> : android ? <><p>No Android, instale pelo Chrome para abrir em tela cheia e manter o acesso rápido.</p>{canInstall ? <button className="primary-button" onClick={onInstall}>Instalar no Android <span>↓</span></button> : <small>Abra o menu ⋮ do Chrome e escolha “Instalar app” ou “Adicionar à tela inicial”.</small>}</> : iosDevice ? <><p>No iPhone, abra no Safari, toque em Compartilhar e escolha “Adicionar à Tela de Início”.</p><a href="/AngelsFit.mobileconfig">Ver instruções para iPhone</a></> : <p>Abra o menu do navegador e escolha a opção para instalar ou adicionar à tela inicial.</p>}<small>Não distribuímos APK de depuração. A instalação usa a versão web oficial e atualizada.</small></section>;
+  return <section className="installation-setting"><p>INSTALAÇÃO</p><h2>Usar AngelsFit como aplicativo</h2>{installed ? <div className="installation-ready"><span>✓</span><div><strong>Já instalado neste aparelho</strong><small>Abra pelo ícone da tela inicial.</small></div></div> : android ? <><p>No Android, escolha o APK oficial para funcionamento nativo e offline ou instale a versão web pelo Chrome.</p><button className="primary-button" onClick={() => { void openExternal(`${RELEASES_URL}/latest`); }}>Baixar APK para Android <span>↓</span></button>{canInstall ? <button className="secondary-install-button" onClick={onInstall}>Instalar versão web</button> : <small>Para a versão web, abra o menu ⋮ do Chrome e escolha “Instalar app”.</small>}</> : iosDevice ? <><p>No iPhone, abra no Safari, toque em Compartilhar e escolha “Adicionar à Tela de Início”.</p><a href="/AngelsFit.mobileconfig">Ver instruções para iPhone</a></> : <p>Abra o menu do navegador e escolha a opção para instalar ou adicionar à tela inicial.</p>}<small>O APK requer Android 7 ou mais recente e mantém seus dados somente no aparelho.</small></section>;
 }
 
 function WorkoutFontSizeSetting({ value, onChange }: { value: AppPreferences["workoutFontSize"]; onChange: (value: AppPreferences["workoutFontSize"]) => void }) {
@@ -1690,7 +1788,10 @@ function ProfileView(props: ProfileViewProps) {
   const { profile, editing, setEditing, theme, changeTheme, exportBackup, preferences, changePreference, installedAppVersion, updateStatus, lastUpdateCheck, updateApplication } = props;
   if (editing) return <ProfileViewBase {...props} />;
   const updateMessage = updateStatus === "checking" ? "Verificando versões e protegendo seus dados…" : updateStatus === "current" ? "Você está usando a versão mais recente." : updateStatus === "available" ? "Nova versão de conteúdo encontrada." : updateStatus === "offline" ? "Sem conexão. Seu treino salvo continua disponível." : updateStatus === "native-required" ? "O contêiner instalado precisa de uma atualização nativa." : updateStatus === "error" ? "A atualização falhou. Seus dados foram preservados." : "Verifique conteúdo e aplicativo sem apagar seus dados.";
-  return <section className="screen"><div className="profile-hero"><Avatar profile={profile} size="large" /><h1>{profile.name}</h1><p>{profile.goal} · {profile.experience}</p><button onClick={() => setEditing(true)}>Editar perfil</button></div><div className="profile-facts"><div><small>Dados corporais</small><strong>{profile.heightCm && profile.weightKg ? `${profile.heightCm} cm · ${formatMetric(profile.weightKg)} kg${profile.waistCm ? ` · cintura ${formatMetric(profile.waistCm)} cm` : ""}` : "Complete seus dados para liberar métricas"}</strong></div><div><small>Rotina</small><strong>{profile.activityLevel || "Não informada"} · {profile.weeklyActivityMinutes || 0} min ativos/semana</strong></div><div><small>Disponibilidade</small><strong>{profile.days.join(" · ")}</strong></div><div><small>Sessão ideal</small><strong>{profile.duration} · {profile.location}</strong></div><div><small>Cuidados</small><strong>{(profile.specialConditions || []).length ? specialConditionOptions.filter((item) => profile.specialConditions?.includes(item.id)).map((item) => item.label).join(" · ") : "Nenhum cuidado especial marcado"}</strong></div><div><small>Observações</small><strong>{profile.limitations || "Nenhuma limitação informada"}</strong></div></div><div className="section-heading"><div><p>AJUSTES</p><h2>Experiência do treino</h2></div></div><div className="settings-list"><button onClick={changeTheme}><span>{theme === "dark" ? "☾" : "☀"}</span><div><strong>Aparência</strong><small>{theme === "dark" ? "Tema escuro" : "Tema claro"}</small></div><b>Alterar</b></button><button onClick={() => changePreference("vibration", !preferences.vibration)}><span>≋</span><div><strong>Vibração</strong><small>Feedback ao concluir séries e descanso</small></div><b>{preferences.vibration ? "Ativa" : "Inativa"}</b></button><button onClick={() => changePreference("sound", !preferences.sound)}><span>♪</span><div><strong>Som do timer</strong><small>Aviso opcional ao terminar o descanso</small></div><b>{preferences.sound ? "Ativo" : "Inativo"}</b></button><button onClick={() => changePreference("keepAwake", !preferences.keepAwake)}><span>◉</span><div><strong>Manter tela ligada</strong><small>Durante uma sessão em andamento</small></div><b>{preferences.keepAwake ? "Ativo" : "Inativo"}</b></button><WorkoutFontSizeSetting value={preferences.workoutFontSize} onChange={(value) => changePreference("workoutFontSize", value)} /><button onClick={exportBackup}><span>↓</span><div><strong>Exportar backup</strong><small>Perfil, programa, medições, presenças e histórico</small></div><b>Exportar</b></button></div><section className={`update-card update-${updateStatus}`}><div><p>SOBRE E ATUALIZAÇÃO</p><h2>AngelsFit</h2><span>{updateMessage}</span></div><dl><div><dt>Aplicativo instalado</dt><dd>{installedAppVersion}{isNativeApp() ? " · nativo" : " · web"}</dd></div><div><dt>Conteúdo</dt><dd>{CONTENT_VERSION}</dd></div><div><dt>Schema local</dt><dd>{CURRENT_DATA_SCHEMA_VERSION}</dd></div><div><dt>Compatibilidade mínima</dt><dd>{MINIMUM_SUPPORTED_APP_VERSION}</dd></div><div><dt>Última verificação</dt><dd>{lastUpdateCheck ? new Intl.DateTimeFormat("pt-BR", { dateStyle: "short", timeStyle: "short" }).format(new Date(lastUpdateCheck)) : "Ainda não verificado"}</dd></div></dl><button className="primary-button" disabled={updateStatus === "checking"} onClick={updateApplication}>{updateStatus === "checking" ? "Verificando…" : "Atualizar aplicativo"} <span>↻</span></button>{updateStatus === "native-required" && <button className="native-update-link" onClick={() => { void openExternal("https://github.com/MarioSerafimCoder/AngelsFit/releases"); }}>Abrir atualização nativa</button>}</section><p className="app-version">ANGELSFIT · CONTEÚDO {CONTENT_VERSION}</p></section>;
+  const profileSummary = [profile.goal || "Objetivo ainda não definido", profile.experience || "Nível sendo aprendido"].join(" · ");
+  const routineSummary = [profile.activityLevel, profile.weeklyActivityMinutes ? `${profile.weeklyActivityMinutes} min ativos/semana` : ""].filter(Boolean).join(" · ") || "Rotina sendo aprendida";
+  const sessionSummary = [profile.duration || "Duração sendo aprendida", profile.location || "Local não definido"].join(" · ");
+  return <section className="screen"><div className="profile-hero"><Avatar profile={profile} size="large" /><h1>{profile.name || "Seu perfil"}</h1><p>{profileSummary}</p><button onClick={() => setEditing(true)}>Editar perfil</button></div><div className="profile-facts"><div><small>Dados corporais</small><strong>{profile.heightCm && profile.weightKg ? `${profile.heightCm} cm · ${formatMetric(profile.weightKg)} kg${profile.waistCm ? ` · cintura ${formatMetric(profile.waistCm)} cm` : ""}` : "Adicione medidas se quiser acompanhar peso, IMC e cintura"}</strong></div><div><small>Rotina</small><strong>{routineSummary}</strong></div><div><small>Disponibilidade</small><strong>{profile.days.length ? profile.days.join(" · ") : "Rotina sendo aprendida"}</strong></div><div><small>Sessão ideal</small><strong>{sessionSummary}</strong></div><div><small>Cuidados</small><strong>{(profile.specialConditions || []).length ? specialConditionOptions.filter((item) => profile.specialConditions?.includes(item.id)).map((item) => item.label).join(" · ") : "Nenhum cuidado especial marcado"}</strong></div><div><small>Observações</small><strong>{profile.limitations || "Nenhuma limitação informada"}</strong></div></div><div className="section-heading"><div><p>AJUSTES</p><h2>Experiência do treino</h2></div></div><div className="settings-list"><button onClick={changeTheme}><span>{theme === "dark" ? "☾" : "☀"}</span><div><strong>Aparência</strong><small>{theme === "dark" ? "Tema escuro" : "Tema claro"}</small></div><b>Alterar</b></button><button onClick={() => changePreference("vibration", !preferences.vibration)}><span>≋</span><div><strong>Vibração</strong><small>Feedback ao concluir séries e descanso</small></div><b>{preferences.vibration ? "Ativa" : "Inativa"}</b></button><button onClick={() => changePreference("sound", !preferences.sound)}><span>♪</span><div><strong>Som do timer</strong><small>Aviso opcional ao terminar o descanso</small></div><b>{preferences.sound ? "Ativo" : "Inativo"}</b></button><button onClick={() => changePreference("keepAwake", !preferences.keepAwake)}><span>◉</span><div><strong>Manter tela ligada</strong><small>Durante uma sessão em andamento</small></div><b>{preferences.keepAwake ? "Ativo" : "Inativo"}</b></button><WorkoutFontSizeSetting value={preferences.workoutFontSize} onChange={(value) => changePreference("workoutFontSize", value)} /><button onClick={() => { void exportBackup(); }}><span>↓</span><div><strong>Fazer backup agora</strong><small>Salve perfil, programa, medições, presenças, histórico e preferências</small></div><b>Salvar</b></button></div><section className={`update-card update-${updateStatus}`}><div><p>SOBRE E ATUALIZAÇÃO</p><h2>AngelsFit</h2><span>{updateMessage}</span></div><dl><div><dt>Aplicativo instalado</dt><dd>{installedAppVersion}{isNativeApp() ? " · nativo" : " · web"}</dd></div><div><dt>Conteúdo</dt><dd>{CONTENT_VERSION}</dd></div><div><dt>Schema local</dt><dd>{CURRENT_DATA_SCHEMA_VERSION}</dd></div><div><dt>Compatibilidade mínima</dt><dd>{MINIMUM_SUPPORTED_APP_VERSION}</dd></div><div><dt>Última verificação</dt><dd>{lastUpdateCheck ? new Intl.DateTimeFormat("pt-BR", { dateStyle: "short", timeStyle: "short" }).format(new Date(lastUpdateCheck)) : "Ainda não verificado"}</dd></div></dl><button className="primary-button" disabled={updateStatus === "checking"} onClick={updateApplication}>{updateStatus === "checking" ? "Verificando…" : "Atualizar aplicativo"} <span>↻</span></button>{updateStatus === "native-required" && <button className="native-update-link" onClick={() => { void openExternal(RELEASES_URL); }}>Abrir atualização nativa</button>}</section><p className="app-version">ANGELSFIT · CONTEÚDO {CONTENT_VERSION}</p></section>;
 }
 
 function ProfileViewBase({ draft, setDraft, editing, cancelEditing, saveProfile, handlePhoto, toggleDay, toggleSpecialCondition, toggleListField, exportBackup }: ProfileViewProps) {
