@@ -11,7 +11,7 @@ import { BodyMeasurement, bmiCategory, calculateAge, calculateBmi, epleyEstimate
 import { getBrowserDataRepository } from "./data-repository";
 import { ActiveWorkoutSession, SeriesPerformance, addRestSeconds, beginActiveSession, clearRestNotice, completeRest, completeSeriesPerformance, enterFeedback, getElapsedSeconds, getRestRemainingSeconds, hasMeaningfulSessionActivity, normalizeActiveWorkoutSession, normalizeCardioIntensity, patchActiveSession, patchSeriesPerformance, pauseRest, reopenSeriesPerformance, resumeRest, seriesPerformances, sessionCompletionProgress, skipRest, startRest, createActiveWorkoutSession, summarizeActiveSession, type CardioIntensity } from "./active-session";
 import { APP_VERSION, CONTENT_VERSION, CURRENT_DATA_SCHEMA_VERSION, LAST_UPDATE_CHECK_KEY, MINIMUM_SUPPORTED_APP_VERSION, compareVersions, runDataMigrations, validateVersionMetadata } from "./versioning";
-import { configureNativeChrome, getInstalledAppVersion, hapticImpact, isIosDevice, isNativeApp, openExternal, registerNativeBackButton } from "./native-platform";
+import { configureNativeChrome, getInstalledAppVersion, hapticImpact, isIosDevice, isNativeApp, openExternal, registerNativeBackButton, requestRestNotificationPermission, shareNativeBackup, showRestNotification } from "./native-platform";
 import { applyReturnAdaptation, buildCalendarSchedule, buildWeeklyMuscleVolume, calculateAdherence, completedSequenceCount, eligibleProtocols, getReturnAdaptation, isAttendedTrainingSession, mergeLegacyCheckIns, migrateTrainingHistory, normalizedTrainingStatus, recommendedWorkoutIndex, trainingStatusLabel, toLocalDateKey, type ExercisePerformanceRecord, type SeriesPerformanceRecord, type TrainingHistoryLike, type TrainingSessionStatus } from "./training-intelligence";
 import { BACKUP_FORMAT_VERSION, BackupValidationError, MAX_BACKUP_FILE_SIZE, parseBackupJson, type ParsedBackup } from "./backup";
 import { rankExerciseSubstitutions } from "./exercise-substitution";
@@ -27,6 +27,8 @@ type AppTab = "today" | "program" | "exercises" | "progress" | "profile";
 
 const CARDIO_LABELS: Record<CardioIntensity, string> = { none: "Sem cardio hoje", light: "Leve", moderate: "Moderada", vigorous: "Intensa" };
 const POSTPONED_WORKOUT_KEY = "angelsfit.postponed-workout.v1";
+const RELEASES_URL = "https://github.com/MarioSerafimCoder/AngelsFit/releases";
+const REMOTE_VERSION_URL = "https://fitlocal-mario.mario-92.chatgpt.site/version.json";
 
 function cardioLabel(value: unknown): string {
   return CARDIO_LABELS[normalizeCardioIntensity(value)];
@@ -284,7 +286,7 @@ export default function AngelsFitApp() {
     const captureInstallPrompt = (event: Event) => { event.preventDefault(); setInstallPrompt(event as InstallPromptEvent); };
     window.addEventListener("beforeinstallprompt", captureInstallPrompt);
     let refreshWorker: (() => void) | undefined;
-    if ("serviceWorker" in navigator) {
+    if (!isNativeApp() && "serviceWorker" in navigator) {
       refreshWorker = () => {
         if (!navigator.onLine || document.visibilityState === "hidden") return;
         void navigator.serviceWorker.getRegistration().then((registration) => registration?.update()).catch(() => undefined);
@@ -442,7 +444,7 @@ export default function AngelsFitApp() {
     setDiscardProfilePrompt(false);
   }
 
-  function exportBackup() {
+  async function exportBackup() {
     if (!profile) return;
     const backup = {
       app: "AngelsFit",
@@ -459,18 +461,48 @@ export default function AngelsFitApp() {
       activeSession,
       settings: { theme, preferences },
     };
-    const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
+    const contents = JSON.stringify(backup, null, 2);
+    const filename = `angelsfit-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    if (await shareNativeBackup(filename, contents)) {
+      setSavedMessage("Backup pronto para salvar ou compartilhar");
+      window.setTimeout(() => setSavedMessage(""), 3000);
+      return;
+    }
+    const blob = new Blob([contents], { type: "application/json" });
+    const backupFile = new File([blob], filename, { type: "application/json" });
+    const shareNavigator = navigator as Navigator & { canShare?: (data: ShareData) => boolean };
+    if (navigator.share && shareNavigator.canShare?.({ files: [backupFile] })) {
+      try {
+        await navigator.share({ title: "Backup do AngelsFit", files: [backupFile] });
+        setSavedMessage("Backup compartilhado com segurança");
+        window.setTimeout(() => setSavedMessage(""), 3000);
+        return;
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") return;
+      }
+    }
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = `angelsfit-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    link.download = filename;
+    document.body.appendChild(link);
     link.click();
-    URL.revokeObjectURL(url);
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    setSavedMessage("Backup salvo no aparelho");
+    window.setTimeout(() => setSavedMessage(""), 3000);
   }
 
   async function toggleRestNotifications() {
     if (preferences.restNotifications) {
       changePreference("restNotifications", false);
+      return;
+    }
+    if (isNativeApp()) {
+      const granted = await requestRestNotificationPermission();
+      changePreference("restNotifications", granted);
+      setSavedMessage(granted ? "Avisos de descanso ativados" : "Permissão de notificação não concedida");
+      window.setTimeout(() => setSavedMessage(""), 3000);
       return;
     }
     if (typeof Notification === "undefined") {
@@ -793,7 +825,8 @@ export default function AngelsFitApp() {
       const repository = getBrowserDataRepository();
       if (activeSession) await repository.write("activeSession", activeSession);
       await repository.createSnapshot();
-      const response = await fetch(`/version.json?check=${Date.now()}`, { cache: "no-store" });
+      const versionUrl = isNativeApp() ? REMOTE_VERSION_URL : "/version.json";
+      const response = await fetch(`${versionUrl}?check=${Date.now()}`, { cache: "no-store" });
       if (!response.ok) throw new Error("Version metadata unavailable");
       const metadata: unknown = await response.json();
       if (!validateVersionMetadata(metadata)) throw new Error("Invalid version metadata");
@@ -807,6 +840,10 @@ export default function AngelsFitApp() {
         return;
       }
       if (compareVersions(metadata.contentVersion, CONTENT_VERSION) > 0) {
+        if (isNativeApp()) {
+          setUpdateStatus("native-required");
+          return;
+        }
         setUpdateStatus("available");
         registration?.waiting?.postMessage({ type: "SKIP_WAITING" });
         if ("caches" in globalThis) {
@@ -1439,7 +1476,7 @@ function AdaptiveWorkoutSession({ session, profile, history, previousWorkout, pr
     if (preferences.sound) playTimerSound();
     void hapticImpact(preferences.vibration);
     if (notificationPermission === "granted" && document.visibilityState === "hidden") {
-      void navigator.serviceWorker?.ready.then((registration) => registration.showNotification("Descanso concluído", { body: "Sua próxima série está pronta.", icon: "/icon-192.png", tag: "angelsfit-rest" })).catch(() => undefined);
+      void showRestNotification();
     }
     setState((currentState) => completeRest(currentState));
   }, [notificationPermission, preferences.sound, preferences.vibration, restRemaining, state.restEndsAt]);
@@ -1703,12 +1740,12 @@ function PrescriptionProfileFields({ draft, setDraft, toggleListField }: { draft
   return <div className="prescription-profile-fields"><p className="field-title">Objetivos secundários <small>Até dois.</small></p><div className="choice-grid">{goals.filter((goal) => goal !== draft.goal).map((goal) => <button type="button" key={goal} disabled={!(draft.secondaryGoals || []).includes(goal) && (draft.secondaryGoals || []).length >= 2} aria-pressed={(draft.secondaryGoals || []).includes(goal)} className={(draft.secondaryGoals || []).includes(goal) ? "selected" : ""} onClick={() => toggleListField("secondaryGoals", goal)}>{goal}</button>)}</div><p className="field-title">Equipamentos disponíveis</p><div className="condition-grid">{equipmentOptions.map((item) => <button type="button" key={item} aria-pressed={(draft.availableEquipment || []).includes(item)} className={(draft.availableEquipment || []).includes(item) ? "selected" : ""} onClick={() => toggleListField("availableEquipment", item)}>{item}</button>)}</div><div className="metric-form-grid"><label className="field-label">Meses de treino consistente<input type="number" min="0" max="600" value={draft.monthsConsistent ?? ""} onChange={(event) => setDraft({ ...draft, monthsConsistent: event.target.value ? Number(event.target.value) : 0 })} /></label><label className="field-label">Meses sem treinar<input type="number" min="0" max="600" value={draft.monthsSinceTraining ?? ""} onChange={(event) => setDraft({ ...draft, monthsSinceTraining: event.target.value ? Number(event.target.value) : 0 })} /></label><label className="field-label">Sono médio<input type="number" min="0" max="12" step="0.5" value={draft.averageSleepHours || ""} onChange={(event) => setDraft({ ...draft, averageSleepHours: event.target.value ? Number(event.target.value) : undefined })} /></label><label className="field-label">Estresse<select value={draft.stressLevel || ""} onChange={(event) => setDraft({ ...draft, stressLevel: event.target.value })}><option value="">Selecione</option><option>Baixo</option><option>Moderado</option><option>Alto</option></select></label><label className="field-label">Recuperação percebida<select value={draft.recoveryFeeling || ""} onChange={(event) => setDraft({ ...draft, recoveryFeeling: event.target.value })}><option value="">Selecione</option><option>Boa</option><option>Regular</option><option>Ruim</option></select></label></div><label className="field-label">Exercícios preferidos<input value={draft.preferredExercises || ""} onChange={(event) => setDraft({ ...draft, preferredExercises: event.target.value })} placeholder="Separe por vírgulas" /></label><label className="field-label">Exercícios rejeitados<input value={draft.rejectedExercises || ""} onChange={(event) => setDraft({ ...draft, rejectedExercises: event.target.value })} placeholder="Não entrarão na seleção" /></label>{postpartum && <section className="postpartum-profile-card"><p className="field-title">Recuperação pós-parto</p><div className="metric-form-grid"><label className="field-label">Data do parto<input type="date" value={draft.deliveryDate || ""} onChange={(event) => setDraft({ ...draft, deliveryDate: event.target.value })} /></label><label className="field-label">Tipo de parto<select value={draft.deliveryType || ""} onChange={(event) => setDraft({ ...draft, deliveryType: event.target.value })}><option value="">Selecione</option><option>Cesárea</option><option>Vaginal</option></select></label></div><label className="clearance-check"><input type="checkbox" checked={draft.incisionHealed || false} onChange={(event) => setDraft({ ...draft, incisionHealed: event.target.checked })} /><span><strong>Cicatriz fechada e sem sinais de infecção</strong><small>Sem calor, vermelhidão progressiva, secreção ou febre.</small></span></label><p className="field-title">Sintomas atuais</p><div className="condition-grid symptom-grid">{postpartumSymptomOptions.map((item) => <button type="button" key={item.id} aria-pressed={(draft.postpartumSymptoms || []).includes(item.id)} className={(draft.postpartumSymptoms || []).includes(item.id) ? "selected warning" : ""} onClick={() => toggleListField("postpartumSymptoms", item.id)}>{item.label}</button>)}</div></section>}</div>;
 }
 
-type ProfileViewProps = { profile: Profile; draft: Profile; setDraft: (profile: Profile) => void; editing: boolean; setEditing: (value: boolean) => void; cancelEditing: () => void; saveProfile: (event?: FormEvent) => void; handlePhoto: (event: ChangeEvent<HTMLInputElement>) => void; toggleDay: (day: string) => void; toggleSpecialCondition: (condition: string) => void; toggleListField: (field: "secondaryGoals" | "availableEquipment" | "postpartumSymptoms", value: string) => void; theme: "dark" | "light"; changeTheme: () => void; exportBackup: () => void; preferences: AppPreferences; changePreference: <K extends keyof AppPreferences>(name: K, value: AppPreferences[K]) => void; toggleRestNotifications: () => void; installed: boolean; iosDevice: boolean; installedAppVersion: string; updateStatus: UpdateStatus; lastUpdateCheck: string | null; updateApplication: () => void };
+type ProfileViewProps = { profile: Profile; draft: Profile; setDraft: (profile: Profile) => void; editing: boolean; setEditing: (value: boolean) => void; cancelEditing: () => void; saveProfile: (event?: FormEvent) => void; handlePhoto: (event: ChangeEvent<HTMLInputElement>) => void; toggleDay: (day: string) => void; toggleSpecialCondition: (condition: string) => void; toggleListField: (field: "secondaryGoals" | "availableEquipment" | "postpartumSymptoms", value: string) => void; theme: "dark" | "light"; changeTheme: () => void; exportBackup: () => Promise<void>; preferences: AppPreferences; changePreference: <K extends keyof AppPreferences>(name: K, value: AppPreferences[K]) => void; toggleRestNotifications: () => void; installed: boolean; iosDevice: boolean; installedAppVersion: string; updateStatus: UpdateStatus; lastUpdateCheck: string | null; updateApplication: () => void };
 
 function InstallationSetting({ installed, iosDevice, canInstall, onInstall }: { installed: boolean; iosDevice: boolean; canInstall: boolean; onInstall: () => void }) {
   if (isNativeApp()) return null;
   const android = typeof navigator !== "undefined" && /Android/i.test(navigator.userAgent);
-  return <section className="installation-setting"><p>INSTALAÇÃO</p><h2>Usar AngelsFit como aplicativo</h2>{installed ? <div className="installation-ready"><span>✓</span><div><strong>Já instalado neste aparelho</strong><small>Abra pelo ícone da tela inicial.</small></div></div> : android ? <><p>No Android, instale pelo Chrome para abrir em tela cheia e manter o acesso rápido.</p>{canInstall ? <button className="primary-button" onClick={onInstall}>Instalar no Android <span>↓</span></button> : <small>Abra o menu ⋮ do Chrome e escolha “Instalar app” ou “Adicionar à tela inicial”.</small>}</> : iosDevice ? <><p>No iPhone, abra no Safari, toque em Compartilhar e escolha “Adicionar à Tela de Início”.</p><a href="/AngelsFit.mobileconfig">Ver instruções para iPhone</a></> : <p>Abra o menu do navegador e escolha a opção para instalar ou adicionar à tela inicial.</p>}<small>Não distribuímos APK de depuração. A instalação usa a versão web oficial e atualizada.</small></section>;
+  return <section className="installation-setting"><p>INSTALAÇÃO</p><h2>Usar AngelsFit como aplicativo</h2>{installed ? <div className="installation-ready"><span>✓</span><div><strong>Já instalado neste aparelho</strong><small>Abra pelo ícone da tela inicial.</small></div></div> : android ? <><p>No Android, escolha o APK oficial para funcionamento nativo e offline ou instale a versão web pelo Chrome.</p><button className="primary-button" onClick={() => { void openExternal(`${RELEASES_URL}/latest`); }}>Baixar APK para Android <span>↓</span></button>{canInstall ? <button className="secondary-install-button" onClick={onInstall}>Instalar versão web</button> : <small>Para a versão web, abra o menu ⋮ do Chrome e escolha “Instalar app”.</small>}</> : iosDevice ? <><p>No iPhone, abra no Safari, toque em Compartilhar e escolha “Adicionar à Tela de Início”.</p><a href="/AngelsFit.mobileconfig">Ver instruções para iPhone</a></> : <p>Abra o menu do navegador e escolha a opção para instalar ou adicionar à tela inicial.</p>}<small>O APK requer Android 7 ou mais recente e mantém seus dados somente no aparelho.</small></section>;
 }
 
 function WorkoutFontSizeSetting({ value, onChange }: { value: AppPreferences["workoutFontSize"]; onChange: (value: AppPreferences["workoutFontSize"]) => void }) {
@@ -1754,7 +1791,7 @@ function ProfileView(props: ProfileViewProps) {
   const profileSummary = [profile.goal || "Objetivo ainda não definido", profile.experience || "Nível sendo aprendido"].join(" · ");
   const routineSummary = [profile.activityLevel, profile.weeklyActivityMinutes ? `${profile.weeklyActivityMinutes} min ativos/semana` : ""].filter(Boolean).join(" · ") || "Rotina sendo aprendida";
   const sessionSummary = [profile.duration || "Duração sendo aprendida", profile.location || "Local não definido"].join(" · ");
-  return <section className="screen"><div className="profile-hero"><Avatar profile={profile} size="large" /><h1>{profile.name || "Seu perfil"}</h1><p>{profileSummary}</p><button onClick={() => setEditing(true)}>Editar perfil</button></div><div className="profile-facts"><div><small>Dados corporais</small><strong>{profile.heightCm && profile.weightKg ? `${profile.heightCm} cm · ${formatMetric(profile.weightKg)} kg${profile.waistCm ? ` · cintura ${formatMetric(profile.waistCm)} cm` : ""}` : "Adicione medidas se quiser acompanhar peso, IMC e cintura"}</strong></div><div><small>Rotina</small><strong>{routineSummary}</strong></div><div><small>Disponibilidade</small><strong>{profile.days.length ? profile.days.join(" · ") : "Rotina sendo aprendida"}</strong></div><div><small>Sessão ideal</small><strong>{sessionSummary}</strong></div><div><small>Cuidados</small><strong>{(profile.specialConditions || []).length ? specialConditionOptions.filter((item) => profile.specialConditions?.includes(item.id)).map((item) => item.label).join(" · ") : "Nenhum cuidado especial marcado"}</strong></div><div><small>Observações</small><strong>{profile.limitations || "Nenhuma limitação informada"}</strong></div></div><div className="section-heading"><div><p>AJUSTES</p><h2>Experiência do treino</h2></div></div><div className="settings-list"><button onClick={changeTheme}><span>{theme === "dark" ? "☾" : "☀"}</span><div><strong>Aparência</strong><small>{theme === "dark" ? "Tema escuro" : "Tema claro"}</small></div><b>Alterar</b></button><button onClick={() => changePreference("vibration", !preferences.vibration)}><span>≋</span><div><strong>Vibração</strong><small>Feedback ao concluir séries e descanso</small></div><b>{preferences.vibration ? "Ativa" : "Inativa"}</b></button><button onClick={() => changePreference("sound", !preferences.sound)}><span>♪</span><div><strong>Som do timer</strong><small>Aviso opcional ao terminar o descanso</small></div><b>{preferences.sound ? "Ativo" : "Inativo"}</b></button><button onClick={() => changePreference("keepAwake", !preferences.keepAwake)}><span>◉</span><div><strong>Manter tela ligada</strong><small>Durante uma sessão em andamento</small></div><b>{preferences.keepAwake ? "Ativo" : "Inativo"}</b></button><WorkoutFontSizeSetting value={preferences.workoutFontSize} onChange={(value) => changePreference("workoutFontSize", value)} /><button onClick={exportBackup}><span>↓</span><div><strong>Exportar backup</strong><small>Perfil, programa, medições, presenças e histórico</small></div><b>Exportar</b></button></div><section className={`update-card update-${updateStatus}`}><div><p>SOBRE E ATUALIZAÇÃO</p><h2>AngelsFit</h2><span>{updateMessage}</span></div><dl><div><dt>Aplicativo instalado</dt><dd>{installedAppVersion}{isNativeApp() ? " · nativo" : " · web"}</dd></div><div><dt>Conteúdo</dt><dd>{CONTENT_VERSION}</dd></div><div><dt>Schema local</dt><dd>{CURRENT_DATA_SCHEMA_VERSION}</dd></div><div><dt>Compatibilidade mínima</dt><dd>{MINIMUM_SUPPORTED_APP_VERSION}</dd></div><div><dt>Última verificação</dt><dd>{lastUpdateCheck ? new Intl.DateTimeFormat("pt-BR", { dateStyle: "short", timeStyle: "short" }).format(new Date(lastUpdateCheck)) : "Ainda não verificado"}</dd></div></dl><button className="primary-button" disabled={updateStatus === "checking"} onClick={updateApplication}>{updateStatus === "checking" ? "Verificando…" : "Atualizar aplicativo"} <span>↻</span></button>{updateStatus === "native-required" && <button className="native-update-link" onClick={() => { void openExternal("https://github.com/MarioSerafimCoder/AngelsFit/releases"); }}>Abrir atualização nativa</button>}</section><p className="app-version">ANGELSFIT · CONTEÚDO {CONTENT_VERSION}</p></section>;
+  return <section className="screen"><div className="profile-hero"><Avatar profile={profile} size="large" /><h1>{profile.name || "Seu perfil"}</h1><p>{profileSummary}</p><button onClick={() => setEditing(true)}>Editar perfil</button></div><div className="profile-facts"><div><small>Dados corporais</small><strong>{profile.heightCm && profile.weightKg ? `${profile.heightCm} cm · ${formatMetric(profile.weightKg)} kg${profile.waistCm ? ` · cintura ${formatMetric(profile.waistCm)} cm` : ""}` : "Adicione medidas se quiser acompanhar peso, IMC e cintura"}</strong></div><div><small>Rotina</small><strong>{routineSummary}</strong></div><div><small>Disponibilidade</small><strong>{profile.days.length ? profile.days.join(" · ") : "Rotina sendo aprendida"}</strong></div><div><small>Sessão ideal</small><strong>{sessionSummary}</strong></div><div><small>Cuidados</small><strong>{(profile.specialConditions || []).length ? specialConditionOptions.filter((item) => profile.specialConditions?.includes(item.id)).map((item) => item.label).join(" · ") : "Nenhum cuidado especial marcado"}</strong></div><div><small>Observações</small><strong>{profile.limitations || "Nenhuma limitação informada"}</strong></div></div><div className="section-heading"><div><p>AJUSTES</p><h2>Experiência do treino</h2></div></div><div className="settings-list"><button onClick={changeTheme}><span>{theme === "dark" ? "☾" : "☀"}</span><div><strong>Aparência</strong><small>{theme === "dark" ? "Tema escuro" : "Tema claro"}</small></div><b>Alterar</b></button><button onClick={() => changePreference("vibration", !preferences.vibration)}><span>≋</span><div><strong>Vibração</strong><small>Feedback ao concluir séries e descanso</small></div><b>{preferences.vibration ? "Ativa" : "Inativa"}</b></button><button onClick={() => changePreference("sound", !preferences.sound)}><span>♪</span><div><strong>Som do timer</strong><small>Aviso opcional ao terminar o descanso</small></div><b>{preferences.sound ? "Ativo" : "Inativo"}</b></button><button onClick={() => changePreference("keepAwake", !preferences.keepAwake)}><span>◉</span><div><strong>Manter tela ligada</strong><small>Durante uma sessão em andamento</small></div><b>{preferences.keepAwake ? "Ativo" : "Inativo"}</b></button><WorkoutFontSizeSetting value={preferences.workoutFontSize} onChange={(value) => changePreference("workoutFontSize", value)} /><button onClick={() => { void exportBackup(); }}><span>↓</span><div><strong>Fazer backup agora</strong><small>Salve perfil, programa, medições, presenças, histórico e preferências</small></div><b>Salvar</b></button></div><section className={`update-card update-${updateStatus}`}><div><p>SOBRE E ATUALIZAÇÃO</p><h2>AngelsFit</h2><span>{updateMessage}</span></div><dl><div><dt>Aplicativo instalado</dt><dd>{installedAppVersion}{isNativeApp() ? " · nativo" : " · web"}</dd></div><div><dt>Conteúdo</dt><dd>{CONTENT_VERSION}</dd></div><div><dt>Schema local</dt><dd>{CURRENT_DATA_SCHEMA_VERSION}</dd></div><div><dt>Compatibilidade mínima</dt><dd>{MINIMUM_SUPPORTED_APP_VERSION}</dd></div><div><dt>Última verificação</dt><dd>{lastUpdateCheck ? new Intl.DateTimeFormat("pt-BR", { dateStyle: "short", timeStyle: "short" }).format(new Date(lastUpdateCheck)) : "Ainda não verificado"}</dd></div></dl><button className="primary-button" disabled={updateStatus === "checking"} onClick={updateApplication}>{updateStatus === "checking" ? "Verificando…" : "Atualizar aplicativo"} <span>↻</span></button>{updateStatus === "native-required" && <button className="native-update-link" onClick={() => { void openExternal(RELEASES_URL); }}>Abrir atualização nativa</button>}</section><p className="app-version">ANGELSFIT · CONTEÚDO {CONTENT_VERSION}</p></section>;
 }
 
 function ProfileViewBase({ draft, setDraft, editing, cancelEditing, saveProfile, handlePhoto, toggleDay, toggleSpecialCondition, toggleListField, exportBackup }: ProfileViewProps) {

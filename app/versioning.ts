@@ -2,8 +2,8 @@ import type { SyncKeyValueStorage } from "./data-repository";
 import { normalizeActiveWorkoutSession, type ActiveWorkoutSession } from "./active-session.ts";
 import { mergeLegacyCheckIns, migrateTrainingHistory, type TrainingHistoryLike } from "./training-intelligence.ts";
 
-export const APP_VERSION = "1.0";
-export const CONTENT_VERSION = "2026.08.13.4";
+export const APP_VERSION = "1.1.0";
+export const CONTENT_VERSION = "2026.08.13.5";
 export const CURRENT_DATA_SCHEMA_VERSION = 8;
 export const MINIMUM_SUPPORTED_APP_VERSION = "1.0";
 

@@ -60,6 +60,9 @@ test("includes automatic attendance, free workout flow and protected data flows"
   assert.match(app, /Encerrar treino/);
   assert.match(app, /últimos 4/);
   assert.match(app, /profile-backup-card/);
+  assert.match(app, /Fazer backup agora/);
+  assert.match(app, /shareNativeBackup/);
+  assert.match(app, /Baixar APK para Android/);
   assert.match(app, /RIR da série/);
   assert.match(app, /label="Progresso"/);
   assert.doesNotMatch(app, /label="Histórico"/);
